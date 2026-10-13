@@ -10,7 +10,7 @@ use crate::text::{normalize_name, normalize_rib};
 #[derive(Debug, Clone)]
 pub struct Entry {
     /// 1-based row number as shown in Excel.
-    pub row: usize,
+    pub row: u32,
     pub full_name: String,
     pub rib: String,
 }
@@ -22,15 +22,29 @@ pub struct Person {
     pub entry_ids: Vec<usize>,
 }
 
+/// Where the data sits in the first sheet, so results can be written back next to it.
+pub struct Layout {
+    /// Every cell of the used range, as text.
+    pub rows: Vec<Vec<String>>,
+    /// 1-based sheet row / column of `rows[0][0]`.
+    pub first_row: u32,
+    pub first_col: u32,
+    /// 1-based sheet row of the header, if the sheet has one.
+    pub header_row: Option<u32>,
+}
+
 pub struct Directory {
     pub entries: Vec<Entry>,
     pub persons: Vec<Person>,
+    pub layout: Layout,
+    entry_person: Vec<usize>,
 }
 
 impl Directory {
-    fn new(entries: Vec<Entry>) -> Self {
+    pub fn new(entries: Vec<Entry>, layout: Layout) -> Self {
         let mut by_key: HashMap<String, usize> = HashMap::new();
         let mut persons: Vec<Person> = Vec::new();
+        let mut entry_person = Vec::with_capacity(entries.len());
         for (id, entry) in entries.iter().enumerate() {
             let key = normalize_name(&entry.full_name);
             let idx = *by_key.entry(key.clone()).or_insert_with(|| {
@@ -42,13 +56,27 @@ impl Directory {
                 persons.len() - 1
             });
             persons[idx].entry_ids.push(id);
+            entry_person.push(idx);
         }
-        Self { entries, persons }
+        Self {
+            entries,
+            persons,
+            layout,
+            entry_person,
+        }
+    }
+
+    pub fn person_of(&self, entry: usize) -> usize {
+        self.entry_person[entry]
+    }
+
+    pub fn person_name(&self, person: usize) -> &str {
+        &self.entries[self.persons[person].entry_ids[0]].full_name
     }
 }
 
 pub fn load(path: &Path) -> Result<Directory> {
-    let rows = read_rows(path)?;
+    let (rows, (first_row, first_col)) = read_rows(path)?;
     let Some(header) = rows.first() else {
         bail!("spreadsheet is empty");
     };
@@ -81,7 +109,7 @@ pub fn load(path: &Path) -> Result<Directory> {
                 return None;
             }
             Some(Entry {
-                row: i + 1,
+                row: first_row + i as u32,
                 full_name,
                 rib,
             })
@@ -91,15 +119,24 @@ pub fn load(path: &Path) -> Result<Directory> {
     if entries.is_empty() {
         bail!("no rows with both a full name and a RIB were found");
     }
-    Ok(Directory::new(entries))
+    let layout = Layout {
+        rows,
+        first_row,
+        first_col,
+        header_row: (skip == 1).then_some(first_row),
+    };
+    Ok(Directory::new(entries, layout))
 }
 
-fn read_rows(path: &Path) -> Result<Vec<Vec<String>>> {
+/// Used cells as text, and the 1-based (row, column) of the top-left one.
+type Cells = (Vec<Vec<String>>, (u32, u32));
+
+fn read_rows(path: &Path) -> Result<Cells> {
     let is_csv = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("csv"));
     if is_csv {
-        return read_csv(path);
+        return Ok((read_csv(path)?, (1, 1)));
     }
 
     let mut workbook = open_workbook_auto(path).context("cannot open spreadsheet")?;
@@ -108,8 +145,10 @@ fn read_rows(path: &Path) -> Result<Vec<Vec<String>>> {
         .context("spreadsheet has no sheets")?
         .context("cannot read first sheet")?;
 
+    // The range starts at the first non-empty cell, not necessarily A1.
+    let (start_row, start_col) = range.start().unwrap_or((0, 0));
     let mut warned = false;
-    Ok(range
+    let rows = range
         .rows()
         .map(|row| {
             row.iter()
@@ -123,13 +162,18 @@ fn read_rows(path: &Path) -> Result<Vec<Vec<String>>> {
                             );
                             warned = true;
                         }
-                        format!("{f:.0}")
+                        if f.fract() == 0.0 {
+                            format!("{f:.0}")
+                        } else {
+                            f.to_string()
+                        }
                     }
                     other => other.to_string(),
                 })
                 .collect()
         })
-        .collect())
+        .collect();
+    Ok((rows, (start_row + 1, start_col + 1)))
 }
 
 fn read_csv(path: &Path) -> Result<Vec<Vec<String>>> {

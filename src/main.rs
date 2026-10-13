@@ -1,4 +1,6 @@
+mod export;
 mod matcher;
+mod report;
 mod scan;
 mod sheet;
 mod text;
@@ -13,29 +15,14 @@ use anyhow::Result;
 use colored::Colorize;
 use rayon::prelude::*;
 
+use export::RunInfo;
 use matcher::{NameMatch, RibMatch};
+use report::{DocResult, Status};
 use scan::Scanner;
 use sheet::Directory;
 
 /// Text shorter than this (in letters/digits) means OCR got nothing usable from the page.
 const MIN_READABLE_CHARS: usize = 3;
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Status {
-    NotScanned,
-    Yellow,
-    Red,
-    Green,
-}
-
-/// Outcome for one two-sided document (name page + check page).
-struct DocResult {
-    name_page: usize,
-    person: Option<usize>,
-    matched_entry: Option<usize>,
-    status: Status,
-    detail: String,
-}
 
 fn main() {
     let threads = use_all_threads();
@@ -102,18 +89,37 @@ fn run(threads: usize) -> Result<()> {
             .map(|doc| {
                 let result = process_document(&scanner, &dir, doc * 2, page_count);
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                eprintln!(
-                    "  [{n}/{doc_count}] pages {} done",
-                    page_label(result.name_page, page_count)
-                );
+                eprintln!("  [{n}/{doc_count}] pages {} done", result.pages);
                 result
             })
             .collect()
     });
 
-    println!("\nFinished in {:.1}s.\n", started.elapsed().as_secs_f32());
-    print_documents(&dir, &results, page_count);
-    print_entries(&dir, &results);
+    let seconds = started.elapsed().as_secs_f32();
+    println!("\nFinished in {seconds:.1}s.\n");
+    let reports = report::entry_reports(&dir, &results);
+    report::print_documents(&dir, &results);
+    report::print_entries(&dir, &reports);
+
+    let info = RunInfo {
+        sheet_path: &sheet_path,
+        pdf_path: &pdf_path,
+        page_count,
+        threads,
+        seconds,
+    };
+    let saved = export::write_results(&dir, &results, &reports, &info)?;
+    println!(
+        "\n{} Results written to {}",
+        "i".cyan().bold(),
+        saved.path.display()
+    );
+    if let Some(backup) = saved.backup {
+        println!("  Original spreadsheet backed up as {}", backup.display());
+    }
+    if let Some(note) = saved.note {
+        println!("  {note}");
+    }
     Ok(())
 }
 
@@ -125,10 +131,14 @@ fn process_document(
 ) -> DocResult {
     let check_page = (name_page + 1 < page_count).then_some(name_page + 1);
     let mut result = DocResult {
-        name_page,
+        pages: match check_page {
+            Some(p) => format!("{}-{}", name_page + 1, p + 1),
+            None => format!("{}", name_page + 1),
+        },
         person: None,
         matched_entry: None,
         status: Status::Yellow,
+        rib_read: String::new(),
         detail: String::new(),
     };
 
@@ -147,7 +157,7 @@ fn process_document(
     let person = match matcher::find_person(dir, &name_text) {
         NameMatch::Found(p) => p,
         NameMatch::Ambiguous(ids) => {
-            let names: Vec<&str> = ids.iter().map(|&p| person_name(dir, p)).collect();
+            let names: Vec<&str> = ids.iter().map(|&p| dir.person_name(p)).collect();
             return result.yellow(&format!("name is ambiguous: {}", names.join(" / ")));
         }
         NameMatch::NotFound => {
@@ -176,11 +186,13 @@ fn process_document(
         RibMatch::Matched(entry) => {
             result.matched_entry = Some(entry);
             result.status = Status::Green;
+            result.rib_read = dir.entries[entry].rib.clone();
             result.detail = format!("RIB {} OK", dir.entries[entry].rib);
         }
         RibMatch::Mismatch { seen } => {
             result.status = Status::Red;
-            result.detail = format!("RIB mismatch, check shows: {}", seen.join(" | "));
+            result.rib_read = seen.join(" | ");
+            result.detail = format!("RIB mismatch, check shows: {}", result.rib_read);
         }
         RibMatch::Unreadable => return result.yellow("no RIB readable on check"),
     }
@@ -197,83 +209,6 @@ impl DocResult {
 
 fn is_readable(text: &str) -> bool {
     text.chars().filter(|c| c.is_alphanumeric()).count() >= MIN_READABLE_CHARS
-}
-
-fn person_name(dir: &Directory, person: usize) -> &str {
-    &dir.entries[dir.persons[person].entry_ids[0]].full_name
-}
-
-fn page_label(name_page: usize, page_count: usize) -> String {
-    if name_page + 1 < page_count {
-        format!("{}-{}", name_page + 1, name_page + 2)
-    } else {
-        format!("{}", name_page + 1)
-    }
-}
-
-fn paint(status: Status, text: &str) -> colored::ColoredString {
-    match status {
-        Status::Green => text.green(),
-        Status::Red => text.red(),
-        Status::Yellow => text.yellow(),
-        Status::NotScanned => text.dimmed(),
-    }
-}
-
-fn print_documents(dir: &Directory, results: &[DocResult], page_count: usize) {
-    println!("{}", "Documents".bold());
-    for r in results {
-        let name = r.person.map_or("?", |p| person_name(dir, p));
-        let line = format!(
-            "  pages {:<7} {:<30} {}",
-            page_label(r.name_page, page_count),
-            name,
-            r.detail
-        );
-        println!("{}", paint(r.status, &line));
-    }
-    println!();
-}
-
-/// Roll document results up to spreadsheet rows. A row is green once any check proves its RIB;
-/// otherwise it takes the worst outcome among the documents of the same person.
-fn print_entries(dir: &Directory, results: &[DocResult]) {
-    let mut statuses = vec![Status::NotScanned; dir.entries.len()];
-    for r in results {
-        if let Some(entry) = r.matched_entry {
-            statuses[entry] = Status::Green;
-        }
-    }
-    for r in results.iter().filter(|r| r.status != Status::Green) {
-        let Some(person) = r.person else { continue };
-        for &entry in &dir.persons[person].entry_ids {
-            statuses[entry] = statuses[entry].max(r.status);
-        }
-    }
-
-    println!("{}", "Spreadsheet entries".bold());
-    for (entry, status) in dir.entries.iter().zip(&statuses) {
-        let label = match status {
-            Status::Green => "MATCH",
-            Status::Red => "MISMATCH",
-            Status::Yellow => "UNREADABLE",
-            Status::NotScanned => "NOT IN PDF",
-        };
-        let line = format!(
-            "  row {:<5} {:<30} {:<26} {}",
-            entry.row, entry.full_name, entry.rib, label
-        );
-        println!("{}", paint(*status, &line));
-    }
-
-    let count = |s: Status| statuses.iter().filter(|&&x| x == s).count();
-    println!(
-        "\n{}  {}  {}  {}",
-        format!("{} match", count(Status::Green)).green(),
-        format!("{} mismatch", count(Status::Red)).red(),
-        format!("{} unreadable", count(Status::Yellow)).yellow(),
-        format!("{} not in pdf", count(Status::NotScanned)).dimmed(),
-    );
 }
 
 /// Ask for a path. Accepts paths pasted with quotes ("Copy as path" on Windows)

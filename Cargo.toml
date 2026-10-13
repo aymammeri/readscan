@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 calamine = "0.36"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 colored = "3"
 csv = "1"
 hayro = "0.8"
@@ -13,4 +14,5 @@ ocrs = "0.13"
 rayon = "1"
 rten = "0.26"
 strsim = "0.11"
+umya-spreadsheet = "3.1.1"
 unicode-normalization = "0.1"

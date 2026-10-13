@@ -43,6 +43,17 @@ pushing a `v*` tag also attaches it as a zip to a GitHub release. Unzip, keep `m
 - **yellow**: page unreadable, name not found / ambiguous, or no RIB readable on the check
 - **dim**: spreadsheet row with no document in the PDF
 
+Results are also written into the spreadsheet:
+
+- first sheet: every row colored, plus `Scan result`, `Scan pages`, `Scan RIB read`, `Scan details` columns
+- `Scan summary` sheet: run info, totals per color, notes
+- `Scan documents` sheet: every scanned document, including ones whose name matched no row
+
+`.xlsx` files are updated in place and the previous version is kept as `<name>.backup.xlsx`.
+`.csv`, `.xls`, `.ods`, `.xlsm` and `.xlsb` are left untouched and results go to a new `<name>_results.xlsx`.
+If the file can't be overwritten (e.g. open in Excel), results also go to `<name>_results.xlsx`.
+Re-running on the same file reuses the result columns and replaces the two scan sheets.
+
 The spreadsheet's first sheet is used. Columns are found by header (`name`/`nom`, `rib`/`rip`);
 otherwise column A is the name and column B the RIB. Keep the RIB column formatted as **Text**
 in Excel, numbers longer than 15 digits lose precision.
