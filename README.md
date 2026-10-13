@@ -26,7 +26,15 @@ Scanned PDF path: scans.pdf
 ```
 
 Pages are paired in order: (1,2), (3,4), ... Both sides of a document are OCR'd at once,
-and many documents are processed concurrently.
+and many documents are processed concurrently on every logical CPU of the machine
+(override with `RTEN_NUM_THREADS=4`).
+
+## Windows
+
+Every push to `master` builds `readscan-windows-x64` (exe + models) in the repo's Actions tab;
+pushing a `v*` tag also attaches it as a zip to a GitHub release. Unzip, keep `models\` next to
+`readscan.exe`, and double-click it or run it from a terminal. On Windows, paste paths with
+"Copy as path" (the quotes are fine). Peak memory is roughly 200 MB per thread.
 
 ## Results
 

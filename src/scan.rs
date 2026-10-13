@@ -9,8 +9,9 @@ use hayro::{PixmapSettings, RenderCache, RenderSettings};
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
 use rten::Model;
 
-/// Scans are usually 200-300 DPI; rendering at 200 keeps text sharp without huge bitmaps.
-const RENDER_DPI: f32 = 200.0;
+/// 150 DPI is ~44% fewer pixels than 200 and still enough for printed text.
+/// Raise it if RIB digits on real checks start being misread.
+const RENDER_DPI: f32 = 150.0;
 const DETECTION_MODEL: &str = "text-detection.rten";
 const RECOGNITION_MODEL: &str = "text-recognition.rten";
 
