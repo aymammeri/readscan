@@ -5,10 +5,11 @@ mod scan;
 mod sheet;
 mod text;
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -79,19 +80,27 @@ fn run(threads: usize) -> Result<()> {
     let doc_count = page_count.div_ceil(2);
     println!("Scanning {doc_count} documents ({page_count} pages) on {threads} threads...\n");
     let started = Instant::now();
-    let done = AtomicUsize::new(0);
+    let progress = Mutex::new(Progress::new(page_count));
 
     // Run inside rten's pool so page rendering and OCR share one set of threads
-    // instead of two pools competing for the same cores.
+    // instead of two pools competing for the same cores. `par_bridge` is a FIFO queue:
+    // each free thread takes the next page in order (1, 2, 3, ...).
     let results: Vec<DocResult> = rten::thread_pool().run(|| {
-        (0..doc_count)
-            .into_par_iter()
-            .map(|doc| {
-                let result = process_document(&scanner, &dir, doc * 2, page_count);
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                eprintln!("  [{n}/{doc_count}] pages {} done", result.pages);
-                result
+        let mut pages: Vec<(usize, Result<String>)> = (0..page_count)
+            .par_bridge()
+            .map(|page| {
+                let text = scanner.read_page(page);
+                progress.lock().expect("progress lock").finish(page);
+                (page, text)
             })
+            .collect();
+        pages.sort_by_key(|(page, _)| *page);
+        let texts: Vec<Result<String>> = pages.into_iter().map(|(_, text)| text).collect();
+
+        texts
+            .par_chunks(2)
+            .enumerate()
+            .map(|(doc, sides)| process_document(&dir, doc * 2, &sides[0], sides.get(1)))
             .collect()
     });
 
@@ -123,18 +132,61 @@ fn run(threads: usize) -> Result<()> {
     Ok(())
 }
 
+/// Prints "pages X-Y read" per document in page order, holding back pages that
+/// finish before an earlier one.
+struct Progress {
+    page_count: usize,
+    /// Every page before this one has been read.
+    next: usize,
+    finished: BTreeSet<usize>,
+}
+
+impl Progress {
+    fn new(page_count: usize) -> Self {
+        Self {
+            page_count,
+            next: 0,
+            finished: BTreeSet::new(),
+        }
+    }
+
+    fn finish(&mut self, page: usize) {
+        self.finished.insert(page);
+        while self.finished.remove(&self.next) {
+            self.next += 1;
+            // A document is complete once its check page, or the very last page, is read.
+            if self.next.is_multiple_of(2) || self.next == self.page_count {
+                let name_page = (self.next - 1) / 2 * 2;
+                eprintln!(
+                    "  [{}/{}] pages {} read",
+                    name_page / 2 + 1,
+                    self.page_count.div_ceil(2),
+                    page_range(name_page, self.next - 1 - name_page)
+                );
+            }
+        }
+    }
+}
+
+/// 1-based label for the document starting at 0-based `name_page`.
+fn page_range(name_page: usize, extra_pages: usize) -> String {
+    if extra_pages > 0 {
+        format!("{}-{}", name_page + 1, name_page + 2)
+    } else {
+        format!("{}", name_page + 1)
+    }
+}
+
+/// Match one document from the OCR text of its two sides. The check is only
+/// interpreted once the name is known.
 fn process_document(
-    scanner: &Scanner,
     dir: &Directory,
     name_page: usize,
-    page_count: usize,
+    name_text: &Result<String>,
+    check_text: Option<&Result<String>>,
 ) -> DocResult {
-    let check_page = (name_page + 1 < page_count).then_some(name_page + 1);
     let mut result = DocResult {
-        pages: match check_page {
-            Some(p) => format!("{}-{}", name_page + 1, p + 1),
-            None => format!("{}", name_page + 1),
-        },
+        pages: page_range(name_page, usize::from(check_text.is_some())),
         person: None,
         matched_entry: None,
         status: Status::Yellow,
@@ -142,19 +194,13 @@ fn process_document(
         detail: String::new(),
     };
 
-    // Both sides are OCR'd at the same time; the check is only interpreted once the name is known.
-    let (name_text, check_text) = rayon::join(
-        || scanner.read_page(name_page),
-        || check_page.map(|p| scanner.read_page(p)),
-    );
-
     let name_text = match name_text {
-        Ok(t) if is_readable(&t) => t,
+        Ok(t) if is_readable(t) => t,
         Ok(_) => return result.yellow("name page unreadable"),
         Err(e) => return result.yellow(&format!("name page OCR failed: {e}")),
     };
 
-    let person = match matcher::find_person(dir, &name_text) {
+    let person = match matcher::find_person(dir, name_text) {
         NameMatch::Found(p) => p,
         NameMatch::Ambiguous(ids) => {
             let names: Vec<&str> = ids.iter().map(|&p| dir.person_name(p)).collect();
@@ -176,13 +222,13 @@ fn process_document(
     result.person = Some(person);
 
     let check_text = match check_text {
-        Some(Ok(t)) if is_readable(&t) => t,
+        Some(Ok(t)) if is_readable(t) => t,
         Some(Ok(_)) => return result.yellow("check page unreadable"),
         Some(Err(e)) => return result.yellow(&format!("check page OCR failed: {e}")),
         None => return result.yellow("check page missing"),
     };
 
-    match matcher::check_rib(dir, &dir.persons[person].entry_ids, &check_text) {
+    match matcher::check_rib(dir, &dir.persons[person].entry_ids, check_text) {
         RibMatch::Matched(entry) => {
             result.matched_entry = Some(entry);
             result.status = Status::Green;
