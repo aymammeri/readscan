@@ -37,11 +37,10 @@ pub struct Note {
     lines: Vec<String>,
 }
 
-/// One banner per document that is not a full MATCH or has no case number, on its check page
-/// (else its QUITTANCE).
+/// One banner per document that is not a full MATCH, on its check page (else its QUITTANCE).
 pub fn notes(dir: &Directory, docs: &[DocResult]) -> Vec<Note> {
     docs.iter()
-        .filter(|d| d.status != Status::Match || d.case.is_none())
+        .filter(|d| d.status != Status::Match)
         .map(|d| Note {
             page: d.page,
             keep: d.page_ids.clone(),

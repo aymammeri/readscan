@@ -45,6 +45,12 @@ pub fn process_document(
         .flatten()
         .collect();
     result.page_ids.sort_unstable();
+    if let Some(c) = check_page
+        && let Some(detail) = wrong_pair(dir, &result, &texts[name_page], &texts[c], c)
+    {
+        result.status = Status::WrongPair;
+        result.detail = detail;
+    }
     if result.case.is_none() {
         result.case = texts[name_page]
             .as_ref()
@@ -59,6 +65,46 @@ pub fn process_document(
         );
     }
     result
+}
+
+/// Secondary rule, only when the RIB did not confirm the document: the check names another
+/// person of the spreadsheet than the QUITTANCE, and not the QUITTANCE's person. The pages are
+/// paired wrongly. A check whose name can't be read, or names someone whose name looks like
+/// the QUITTANCE's, never makes a WRONG PAIR.
+fn wrong_pair(
+    dir: &Directory,
+    result: &DocResult,
+    name_page: &Result<PageText>,
+    check_page: &Result<PageText>,
+    c: usize,
+) -> Option<String> {
+    let unconfirmed = matches!(
+        result.status,
+        Status::Partial | Status::Weak | Status::Mismatch | Status::MissingRib | Status::Unreadable
+    );
+    if !unconfirmed {
+        return None;
+    }
+    let NameMatch::Found(named) = matcher::find_named(dir, name_text_of(name_page).ok()?) else {
+        return None;
+    };
+    let check_text = text_of(check_page).ok()?;
+    let NameMatch::Found(holder) = matcher::find_person(dir, check_text) else {
+        return None;
+    };
+    if holder == named
+        || matcher::look_alike(dir, holder, named)
+        || matcher::names_person(dir, named, check_text)
+    {
+        return None;
+    }
+    let row = dir.entries[dir.persons[holder].entry_ids[0]].row;
+    Some(format!(
+        "Page {}: check is for {} (row {row}), not {}. Fix the pairing.",
+        c + 1,
+        dir.person_name(holder),
+        dir.person_name(named)
+    ))
 }
 
 /// A document with the same full name and case number as an earlier one is a DUPLICATE.
@@ -581,5 +627,58 @@ mod tests {
             ]
         );
         assert!(docs[2].detail.contains("pages 1-2"));
+    }
+
+    fn page(text: &str) -> Result<PageText> {
+        Ok(PageText {
+            text: text.to_string(),
+            tilt: 0.0,
+            sideways: false,
+            top: text.to_string(),
+        })
+    }
+
+    #[test]
+    fn check_naming_someone_else_is_a_wrong_pair() {
+        use crate::sheet::Entry;
+        let entry = |row, name: &str| Entry {
+            row,
+            full_name: name.to_string(),
+            rib: String::new(),
+            rib_digits: String::new(),
+        };
+        let dir = Directory::new(vec![
+            entry(2, "Sarah Benali"),
+            entry(3, "Karim Haddad"),
+            entry(4, "Khechal Nabil"),
+            entry(5, "Khechai Nabil"),
+        ]);
+        let pair = |status, quittance: &str, check: &str| {
+            let result = DocResult {
+                status,
+                ..DocResult::new("1-2".to_string())
+            };
+            let quittance = format!("Bénéficiaire de l'indemnité {quittance}");
+            wrong_pair(&dir, &result, &page(&quittance), &page(check), 1)
+        };
+        let detail = pair(Status::Mismatch, "SARAH BENALI", "M. KARIM HADDAD");
+        assert_eq!(
+            detail.as_deref(),
+            Some("Page 2: check is for Karim Haddad (row 3), not Sarah Benali. Fix the pairing.")
+        );
+        assert!(pair(Status::Mismatch, "SARAH BENALI", "MME SARAH BENALI").is_none());
+        assert!(pair(Status::Mismatch, "SARAH BENALI", "Payez contre ce cheque").is_none());
+        assert!(
+            pair(Status::Match, "SARAH BENALI", "M. KARIM HADDAD").is_none(),
+            "RIB decides"
+        );
+        assert!(
+            pair(Status::Strong, "SARAH BENALI", "M. KARIM HADDAD").is_none(),
+            "RIB decides"
+        );
+        assert!(
+            pair(Status::Mismatch, "KHECHAL NABIL", "M. KHECHAI NABIL").is_none(),
+            "look alike"
+        );
     }
 }

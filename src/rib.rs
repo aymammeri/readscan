@@ -420,14 +420,19 @@ fn best_reading(rows: &[Vec<String>], ribs: &[(usize, &str)]) -> Option<(Reading
 
 /// Lay a row's digit pieces over the 20 positions of `rib`. Each piece goes where it shares
 /// the longest run of digits with the RIB, so a piece from the left, the right or the middle
-/// lands in its place, and garbage digits around it fall outside. Pieces sharing fewer than
-/// 2 digits in a row are left out; `?` marks positions nothing was read for.
+/// lands in its place, and garbage digits around it fall outside. A piece of exactly 20 digits
+/// is a whole RIB and is never shifted. Pieces sharing fewer than 2 digits in a row are left
+/// out; `?` marks positions nothing was read for.
 fn align_row(row: &[String], rib: &str) -> String {
     let rib = rib.as_bytes();
     let mut placed: Vec<(usize, isize, &[u8])> = row
         .iter()
         .map(|piece| {
-            let (offset, run) = best_offset(piece.as_bytes(), rib);
+            let (offset, run) = if piece.len() == RIB_LEN {
+                (0, longest_run_at(piece.as_bytes(), rib, 0))
+            } else {
+                best_offset(piece.as_bytes(), rib)
+            };
             (run, offset, piece.as_bytes())
         })
         .filter(|(run, _, _)| *run >= 2)
@@ -449,19 +454,8 @@ fn align_row(row: &[String], rib: &str) -> String {
 /// Where `piece` shares its longest run of consecutive digits with `rib`: the RIB position of
 /// the piece's first digit (negative when the piece starts with extra digits), and the run.
 fn best_offset(piece: &[u8], rib: &[u8]) -> (isize, usize) {
-    let longest_run = |offset: isize| {
-        let mut best = 0;
-        let mut run = 0;
-        for (k, digit) in piece.iter().enumerate() {
-            let pos = offset + k as isize;
-            let same = (0..rib.len() as isize).contains(&pos) && rib[pos as usize] == *digit;
-            run = if same { run + 1 } else { 0 };
-            best = best.max(run);
-        }
-        best
-    };
     (1 - piece.len() as isize..rib.len() as isize)
-        .map(|offset| (offset, longest_run(offset)))
+        .map(|offset| (offset, longest_run_at(piece, rib, offset)))
         .fold((0, 0), |best, candidate| {
             if candidate.1 > best.1 {
                 candidate
@@ -469,6 +463,20 @@ fn best_offset(piece: &[u8], rib: &[u8]) -> (isize, usize) {
                 best
             }
         })
+}
+
+/// Longest run of consecutive digits `piece` shares with `rib` when its first digit is at RIB
+/// position `offset`.
+fn longest_run_at(piece: &[u8], rib: &[u8], offset: isize) -> usize {
+    let mut best = 0;
+    let mut run = 0;
+    for (k, digit) in piece.iter().enumerate() {
+        let pos = offset + k as isize;
+        let same = (0..rib.len() as isize).contains(&pos) && rib[pos as usize] == *digit;
+        run = if same { run + 1 } else { 0 };
+        best = best.max(run);
+    }
+    best
 }
 
 /// The expected RIB that differs from `read` in the fewest positions, and those 1-based positions.
@@ -692,6 +700,12 @@ mod tests {
     fn clean_read_with_wrong_digits_is_still_partial() {
         assert_eq!(matched("00100123012345000912"), Some((0, 9)));
         assert_eq!(matched("00100123012345000912\nN° 4412"), Some((0, 9)));
+    }
+
+    #[test]
+    fn whole_rib_of_someone_else_is_never_shifted() {
+        // RIB_A shares "0123456789" with this RIB three places to the left.
+        assert_eq!(aligned("00012345678900000000"), "00012345678900000000");
     }
 
     #[test]

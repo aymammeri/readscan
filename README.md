@@ -121,16 +121,22 @@ fails on a rotated or tilted page, it is **ROTATED** ("Page 8 tilted 45°. Resca
 **7. Case number and duplicates.** Each QUITTANCE has a case number ("N° Dossier Sinistre
 2610 - 2026 - 110307", agency codes have 4 or 5 digits); it is mandatory. OCR often drops a
 separator, so digit groups are joined back when they only split between the parts. When it can't be read, the `Case number` cell says
-**NOT READ** in red, the details say "case number not read. Check it.", and the page goes into the
-checked PDF even if the RIB matched. A
+**NOT READ** in red and the details say "case number not read. Check it.". A
 document with the same full name and case number as an earlier one is a **DUPLICATE**. The same
 name with another case number is a separate case. A case number that can't be read never makes a
 duplicate.
 
+**8. Wrong pair (secondary rule).** Only when the RIB did not confirm the document (PARTIAL, WEAK,
+MISMATCH, MISSING RIB or UNREADABLE): if the check names another person of the spreadsheet than the
+QUITTANCE, and not the QUITTANCE's person, the pages are paired wrongly: **WRONG PAIR** ("Page 4:
+check is for Karim Haddad (row 3), not Sarah Benali. Fix the pairing."). A check whose name
+can't be read, or whose name looks like the QUITTANCE's (OCR typos), never makes a WRONG PAIR.
+A MATCH or STRONG RIB always wins over the name.
+
 **Results order.** One line per document, in PDF page order. Spreadsheet rows that no document
 matched follow, as NOT IN PDF (a person whose other RIB was matched is told which pages show it).
 
-**8. Digits, bulls and cows.** The `RIB` and `Scan RIB read` cells and the terminal color every digit:
+**9. Digits, bulls and cows.** The `RIB` and `Scan RIB read` cells and the terminal color every digit:
 **green** right digit in the right place, **orange** a digit of the RIB read in another place,
 **red** a digit not in the RIB, **grey** not readable (`?`). `Scan details` ends with the counts,
 e.g. "Digits: 13 right, 0 misplaced, 0 wrong, 7 not read".
@@ -143,6 +149,7 @@ e.g. "Digits: 13 right, 0 misplaced, 0 wrong, 7 not read".
 - **red**, needs action:
   - **WEAK**: 4 or 5 account digits match
   - **MISMATCH**: a clean 20-digit RIB on the check that is not the person's
+  - **WRONG PAIR**: the check names another person than the QUITTANCE
   - **DUPLICATE**: same name and case number as an earlier document
   - **NO CHECK**: a QUITTANCE without its check page
   - **MISSING RIB**: no RIB on the check, or none in the spreadsheet
@@ -161,7 +168,8 @@ written instead).
    `RIB`, `Full name`, `Case number`, each line colored by its result
 
 `<name>_checked.pdf`, written in the same folder, holds only the documents that need a check:
-every document that is not a full MATCH, or has no case number, with both its pages, in PDF order.
+every document that is not a full MATCH, with both its pages, in PDF order. A MATCH whose case
+number was not read is only flagged in the results file.
 Each gets a banner above its check page (or its QUITTANCE when the check is missing), in
 the result's color, in text sized to fill the page width: the result and what to do, the case
 number, the name and row, the spreadsheet RIB, the digits read on the check right below it, and

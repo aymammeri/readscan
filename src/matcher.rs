@@ -1,6 +1,6 @@
 use strsim::normalized_levenshtein;
 
-use crate::sheet::Directory;
+use crate::sheet::{Directory, Person};
 use crate::text::normalize_name;
 
 /// Minimum similarity for an OCR word to count as a name word (tolerates 1 typo in ~5 letters).
@@ -121,40 +121,71 @@ pub enum NameMatch {
     NotFound,
 }
 
+/// The words of a page, and its lines without spaces, as names are looked for in them.
+struct PageWords {
+    words: Vec<String>,
+    compact_lines: Vec<String>,
+}
+
+impl PageWords {
+    fn of(ocr_text: &str) -> Self {
+        Self {
+            words: normalize_name(ocr_text)
+                .split(' ')
+                .map(str::to_string)
+                .collect(),
+            compact_lines: ocr_text
+                .lines()
+                .map(|l| normalize_name(l).replace(' ', ""))
+                .collect(),
+        }
+    }
+
+    /// How well `person`'s name is on the page; None when a word of it is missing.
+    fn score(&self, person: &Person) -> Option<f64> {
+        // OCR often glues words together, so first try the name without spaces.
+        let compact_name = person.key.replace(' ', "");
+        if self.compact_lines.iter().any(|l| l.contains(&compact_name)) {
+            return Some(compact_name.len() as f64);
+        }
+        let mut score = 0.0;
+        for token in &person.tokens {
+            let best = self
+                .words
+                .iter()
+                .map(|w| normalized_levenshtein(token, w))
+                .fold(0.0, f64::max);
+            if best < WORD_SIMILARITY {
+                return None;
+            }
+            score += best * token.len() as f64;
+        }
+        Some(score)
+    }
+}
+
+/// True when two people's names differ by little more than OCR typos ("KHECHAL NABIL" and
+/// "KHECHAI NABIL"): a page naming one can't tell them apart.
+pub fn look_alike(dir: &Directory, a: usize, b: usize) -> bool {
+    let compact = |p: usize| dir.persons[p].key.replace(' ', "");
+    normalized_levenshtein(&compact(a), &compact(b)) >= WORD_SIMILARITY
+}
+
+/// True when the page shows `person`'s name.
+pub fn names_person(dir: &Directory, person: usize, ocr_text: &str) -> bool {
+    PageWords::of(ocr_text)
+        .score(&dir.persons[person])
+        .is_some()
+}
+
 /// Find which person of the directory is named in the OCR text of a page.
 pub fn find_person(dir: &Directory, ocr_text: &str) -> NameMatch {
-    let words: Vec<String> = normalize_name(ocr_text)
-        .split(' ')
-        .map(str::to_string)
-        .collect();
-    let compact_lines: Vec<String> = ocr_text
-        .lines()
-        .map(|l| normalize_name(l).replace(' ', ""))
-        .collect();
-
+    let page = PageWords::of(ocr_text);
     let mut scored: Vec<(usize, f64)> = dir
         .persons
         .iter()
         .enumerate()
-        .filter_map(|(i, person)| {
-            // OCR often glues words together, so first try the name without spaces.
-            let compact_name = person.key.replace(' ', "");
-            if compact_lines.iter().any(|l| l.contains(&compact_name)) {
-                return Some((i, compact_name.len() as f64));
-            }
-            let mut score = 0.0;
-            for token in &person.tokens {
-                let best = words
-                    .iter()
-                    .map(|w| normalized_levenshtein(token, w))
-                    .fold(0.0, f64::max);
-                if best < WORD_SIMILARITY {
-                    return None;
-                }
-                score += best * token.len() as f64;
-            }
-            Some((i, score))
-        })
+        .filter_map(|(i, person)| page.score(person).map(|score| (i, score)))
         .collect();
 
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));

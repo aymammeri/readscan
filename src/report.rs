@@ -18,6 +18,8 @@ pub enum Status {
     Unreadable,
     /// A page is upside down, on its side or too tilted to match.
     Rotated,
+    /// The check names another person than the QUITTANCE.
+    WrongPair,
     Mismatch,
     /// 4 or 5 of the 12 account and key digits match.
     Weak,
@@ -29,12 +31,13 @@ pub enum Status {
 }
 
 impl Status {
-    pub const ALL: [Status; 12] = [
+    pub const ALL: [Status; 13] = [
         Status::Match,
         Status::Strong,
         Status::Partial,
         Status::Weak,
         Status::Mismatch,
+        Status::WrongPair,
         Status::Duplicate,
         Status::NoCheck,
         Status::MissingRib,
@@ -45,9 +48,10 @@ impl Status {
     ];
 
     /// Results shown in red, in `ALL` order: each needs an action.
-    pub const RED: [Status; 6] = [
+    pub const RED: [Status; 7] = [
         Status::Weak,
         Status::Mismatch,
+        Status::WrongPair,
         Status::Duplicate,
         Status::NoCheck,
         Status::MissingRib,
@@ -85,6 +89,7 @@ impl Status {
             Status::Partial => "PARTIAL",
             Status::Weak => "WEAK",
             Status::Mismatch => "MISMATCH",
+            Status::WrongPair => "WRONG PAIR",
             Status::Duplicate => "DUPLICATE",
             Status::NoCheck => "NO CHECK",
             Status::MissingRib => "MISSING RIB",
@@ -103,6 +108,7 @@ impl Status {
             Status::Partial => "FFFFEB9C",
             Status::Weak
             | Status::Mismatch
+            | Status::WrongPair
             | Status::Duplicate
             | Status::NoCheck
             | Status::MissingRib
@@ -120,6 +126,7 @@ impl Status {
             Status::Partial => "6 or 7 of 12 account digits match. Check by hand.",
             Status::Weak => "4 or 5 of 12 account digits match. Check by hand.",
             Status::Mismatch => "Wrong RIB on the check. Verify.",
+            Status::WrongPair => "Check names another person than the QUITTANCE. Fix the pairing.",
             Status::Duplicate => "Same name and case number as an earlier document. Remove it.",
             Status::NoCheck => "QUITTANCE without its check. Add the check.",
             Status::MissingRib => "No RIB on the check or in the spreadsheet. Add it.",
@@ -137,6 +144,7 @@ impl Status {
             Status::Partial => text.yellow(),
             Status::Weak
             | Status::Mismatch
+            | Status::WrongPair
             | Status::Duplicate
             | Status::NoCheck
             | Status::MissingRib
