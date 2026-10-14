@@ -1,24 +1,16 @@
 Checks scanned QUITTANCE + check pages against a spreadsheet of names and RIBs.
+One file per system, nothing to install.
 
-## Download
+**Windows**: download `readscan-windows-x64.exe`, double-click it.
+If SmartScreen warns: *More info* > *Run anyway*.
 
-- **Windows**: `readscan-windows-x64.zip`
-- **macOS** (Apple Silicon and Intel): `readscan-macos-universal.zip`
-
-Each zip has the program, its `models` folder and the README. Keep `models` next to the program.
-
-## Run
-
-**Windows**: unzip, double-click `readscan.exe`. If SmartScreen warns, click *More info* > *Run anyway*.
-
-**macOS**: unzip, then in Terminal, in the unzipped folder:
+**macOS** (Apple Silicon and Intel): download `readscan-macos-universal`, then in Terminal:
 
 ```sh
-xattr -dr com.apple.quarantine .
-./readscan
+cd ~/Downloads
+chmod +x readscan-macos-universal
+xattr -d com.apple.quarantine readscan-macos-universal
+./readscan-macos-universal
 ```
 
-The first line is needed once: macOS blocks downloaded programs that are not from the App Store.
-
-The program asks for the spreadsheet, then the PDF, and writes the results into the spreadsheet
-(a backup of the previous version is kept).
+The first two commands are needed once (macOS blocks downloaded programs).

@@ -6,7 +6,9 @@ OCRs every page and checks each document against a spreadsheet of `full name` / 
 Pure Rust: [hayro](https://crates.io/crates/hayro) renders PDF pages, [ocrs](https://crates.io/crates/ocrs) does OCR,
 [calamine](https://crates.io/crates/calamine) reads `.xlsx/.xls/.ods` (`.csv` also accepted), [rayon](https://crates.io/crates/rayon) runs documents in parallel.
 
-## Setup
+## Build from source
+
+The OCR models are built into the program, so download them into `models/` first:
 
 ```sh
 mkdir -p models
@@ -14,8 +16,6 @@ curl -L https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.rten   -o
 curl -L https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.rten -o models/text-recognition.rten
 cargo build --release
 ```
-
-Models are looked up in `$READSCAN_MODELS`, `./models`, `models/` next to the binary, then `~/.cache/ocrs`.
 
 ## Usage
 
@@ -31,12 +31,13 @@ and many documents are processed concurrently on every logical CPU of the machin
 
 ## Download
 
-Ready-to-run builds are on the [Releases](https://github.com/aymammeri/readscan/releases) page:
-`readscan-windows-x64.zip` and `readscan-macos-universal.zip` (Apple Silicon and Intel).
-Each has the program and its `models` folder; keep them together.
+Ready-to-run programs are on the [Releases](https://github.com/aymammeri/readscan/releases) page,
+one file per system, with the OCR models built in:
 
-- Windows: unzip, double-click `readscan.exe` (SmartScreen: *More info* > *Run anyway*).
-- macOS: unzip, then in that folder run `xattr -dr com.apple.quarantine .` once, then `./readscan`.
+- Windows: `readscan-windows-x64.exe`, double-click it (SmartScreen: *More info* > *Run anyway*).
+- macOS (Apple Silicon and Intel): `readscan-macos-universal`; once, run
+  `chmod +x readscan-macos-universal && xattr -d com.apple.quarantine readscan-macos-universal`,
+  then `./readscan-macos-universal`.
 
 Pushing a `v*` tag builds both and publishes the release.
 

@@ -15,9 +15,9 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            archive: readscan-windows-x64
+            asset: readscan-windows-x64.exe
           - os: macos-latest
-            archive: readscan-macos-universal
+            asset: readscan-macos-universal
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +26,13 @@ jobs:
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
 
+      - name: Download OCR models (built into the program)
+        shell: bash
+        run: |
+          mkdir -p models
+          curl -sSfL https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.rten -o models/text-detection.rten
+          curl -sSfL https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.rten -o models/text-recognition.rten
+
       - run: cargo test --release
 
       - name: Build (Windows)
@@ -33,41 +40,22 @@ jobs:
         shell: bash
         run: |
           cargo build --release
-          mkdir -p dist
-          cp target/release/readscan.exe dist/
+          cp target/release/readscan.exe ${{ matrix.asset }}
 
       - name: Build (macOS, Apple Silicon + Intel in one binary)
         if: matrix.os == 'macos-latest'
         run: |
           cargo build --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
-          mkdir -p dist
-          lipo -create -output dist/readscan \
+          lipo -create -output ${{ matrix.asset }} \
             target/aarch64-apple-darwin/release/readscan \
             target/x86_64-apple-darwin/release/readscan
-          chmod +x dist/readscan
-
-      - name: Add OCR models and README
-        shell: bash
-        run: |
-          mkdir -p dist/models
-          cp README.md dist/
-          curl -sSfL https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.rten -o dist/models/text-detection.rten
-          curl -sSfL https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.rten -o dist/models/text-recognition.rten
-
-      - name: Zip (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath ${{ matrix.archive }}.zip
-
-      - name: Zip (macOS, keeps the executable bit)
-        if: matrix.os == 'macos-latest'
-        run: cd dist && zip -qr ../${{ matrix.archive }}.zip .
+          chmod +x ${{ matrix.asset }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}.zip
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -77,12 +65,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: assets
           merge-multiple: true
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" artifacts/*.zip \
+          gh release create "$GITHUB_REF_NAME" assets/* \
             --title "readscan $GITHUB_REF_NAME" \
             --notes-file .github/release-notes.md

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -14,8 +14,6 @@ use rten::Model;
 const RENDER_DPI: f32 = 150.0;
 /// Placed between OCR lines that were joined back into one printed row.
 const SEGMENT_GAP: &str = "   ";
-const DETECTION_MODEL: &str = "text-detection.rten";
-const RECOGNITION_MODEL: &str = "text-recognition.rten";
 
 /// A quarter-turn applied to a page image before OCR, clockwise.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -214,43 +212,17 @@ fn join_rows<'a>(lines: impl Iterator<Item = &'a TextLine>) -> String {
         .join("\n")
 }
 
+/// The OCR models are built into the program, so it runs on its own. They must be in
+/// `models/` when building (see README).
+static DETECTION_MODEL: &[u8] = include_bytes!("../models/text-detection.rten");
+static RECOGNITION_MODEL: &[u8] = include_bytes!("../models/text-recognition.rten");
+
 pub fn load_engine() -> Result<OcrEngine> {
-    let dir = find_models_dir().ok_or_else(|| {
-        anyhow!(
-            "OCR models not found. Download them into a `models` folder next to the program:\n  \
-             curl -L https://ocrs-models.s3-accelerate.amazonaws.com/{DETECTION_MODEL} -o models/{DETECTION_MODEL}\n  \
-             curl -L https://ocrs-models.s3-accelerate.amazonaws.com/{RECOGNITION_MODEL} -o models/{RECOGNITION_MODEL}\n\
-             or point READSCAN_MODELS to the folder that contains them."
-        )
-    })?;
-    let detection_model = Model::load_file(dir.join(DETECTION_MODEL))?;
-    let recognition_model = Model::load_file(dir.join(RECOGNITION_MODEL))?;
     OcrEngine::new(OcrEngineParams {
-        detection_model: Some(detection_model),
-        recognition_model: Some(recognition_model),
+        detection_model: Some(Model::load_static_slice(DETECTION_MODEL)?),
+        recognition_model: Some(Model::load_static_slice(RECOGNITION_MODEL)?),
         ..Default::default()
     })
-}
-
-fn find_models_dir() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(dir) = std::env::var("READSCAN_MODELS") {
-        candidates.push(PathBuf::from(dir));
-    }
-    candidates.push(PathBuf::from("models"));
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-    {
-        candidates.push(exe_dir.join("models"));
-    }
-    // Where `ocrs-cli` caches its models.
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        candidates.push(PathBuf::from(home).join(".cache").join("ocrs"));
-    }
-    candidates
-        .into_iter()
-        .find(|d| d.join(DETECTION_MODEL).is_file() && d.join(RECOGNITION_MODEL).is_file())
 }
 
 pub fn ensure_pairs(page_count: usize) -> Result<()> {
