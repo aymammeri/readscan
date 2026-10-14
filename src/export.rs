@@ -72,27 +72,11 @@ pub fn write_results(rows: &[ResultRow], docs: &[DocResult], info: &RunInfo) -> 
     }
 }
 
-/// Each spreadsheet row's line goes on the same row number as in the input spreadsheet, so
-/// the two line up; lines with no row follow below. The header stays on row 1.
 fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
     let mut out = SheetWriter::new(sheet);
     let headers: Vec<&str> = RESULT_COLUMNS.iter().map(|(title, _)| *title).collect();
     out.bold_row(&headers);
-    let first = rows.iter().filter_map(|r| r.position).min().unwrap_or(2);
-    let shift = 2u32.saturating_sub(first);
-    let mut below = rows
-        .iter()
-        .filter_map(|r| r.position)
-        .max()
-        .map_or(2, |last| last + shift + 1);
     for r in rows {
-        out.row = match r.position {
-            Some(row) => row + shift,
-            None => {
-                below += 1;
-                below - 1
-            }
-        };
         let marks = r.marks();
         let detail = match &marks {
             Some(marks) if r.status != Status::Match => {

@@ -167,6 +167,7 @@ pub fn assign_rows(dir: &Directory, docs: &mut [DocResult]) {
     for &i in &claims {
         let d = &mut docs[i];
         if d.row_entry.is_none() {
+            d.not_in_sheet = true;
             let amount = d.amount.map_or(String::new(), |a| {
                 format!(" (amount {})", text::format_amount(a))
             });

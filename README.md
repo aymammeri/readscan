@@ -144,16 +144,15 @@ paired wrongly, **WRONG PAIR**, when:
 A check whose name and RIB can't be read never makes a WRONG PAIR. A MATCH or STRONG RIB always
 wins over the name.
 
-**Results order.** The results follow the spreadsheet: one line per row, on the same row number
-as in the input spreadsheet, so the two line up. A row with no document is NOT IN PDF. Then, in
-PDF order, the documents with no row of their own: claims not in the spreadsheet, duplicates,
-stray pages and names not found.
+**Results order.** One line per document, in PDF page order. Spreadsheet rows that no document
+took follow, as NOT IN PDF. Claims that are not in the spreadsheet come last, so they never stand
+in a spreadsheet row and every `Sheet row` number stays the one of the input spreadsheet.
 
 **Claims and amounts.** A person with several rows can have several claims. A document takes a
 row of its person with the RIB its check shows; when several rows fit, the amount on the
 QUITTANCE ("Montant: 5.500,00") picks the row with the same amount, then a full MATCH goes
 first, then PDF order. A document left without a row is a claim that is not in the original
-spreadsheet: **NOT IN SHEET** (yellow), listed below the spreadsheet rows. A document that is
+spreadsheet: **NOT IN SHEET** (yellow), listed at the bottom with an empty `Sheet row`. A document that is
 already red stays red and moves below too, its details starting with "Claim not in the original
 spreadsheet."
 
@@ -187,7 +186,7 @@ written instead).
 
 1. `Summary` sheet (opens first): run info, totals per result (the red total first, then
    each red result below it, as in the terminal), page issues, digit colors
-2. `Results` sheet, in spreadsheet order (see Results order above): `Pages`, `Result`, `Scan details`, `Scan RIB read`,
+2. `Results` sheet, in PDF page order (see Results order above): `Pages`, `Result`, `Scan details`, `Scan RIB read`,
    `RIB`, `Sheet row` (the RIB's row number in the input spreadsheet), `Full name`,
    `Case number`, each line colored by its result
 
