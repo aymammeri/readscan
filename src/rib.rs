@@ -543,6 +543,7 @@ mod tests {
             row,
             full_name: "Aymen Mammeri".to_string(),
             rib: rib.to_string(),
+            amount: None,
             rib_digits: from_sheet(rib),
         };
         Directory::new(vec![entry(2, RIB_A), entry(3, RIB_B)])
@@ -580,6 +581,7 @@ mod tests {
             row: 2,
             full_name: "Ghemired Kamel".to_string(),
             rib: "00799999000001509817".to_string(),
+            amount: None,
             rib_digits: "00799999000001509817".to_string(),
         }])
     }

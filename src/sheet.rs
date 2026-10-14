@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use calamine::{Data, Reader, open_workbook_auto};
 
 use crate::rib;
-use crate::text::normalize_name;
+use crate::text::{self, normalize_name};
 
 /// One spreadsheet row we care about.
 #[derive(Debug, Clone)]
@@ -17,6 +17,8 @@ pub struct Entry {
     pub rib: String,
     /// The 20 digits compared with the checks.
     pub rib_digits: String,
+    /// Amount of the claim in cents, when the spreadsheet has an amount column.
+    pub amount: Option<u64>,
 }
 
 /// A person may own several bank accounts, so entries are grouped by normalized name.
@@ -97,12 +99,13 @@ pub fn load(path: &Path) -> Result<Directory> {
     };
     let name_col = find(&["NAME", "NOM", "FULLNAME", "FULL"]);
     let rib_col = find(&["RIB", "RIP", "IBAN", "COMPTE", "ACCOUNT"]);
+    let amount_col = find(&["MONTANT", "AMOUNT", "SOMME"]);
 
-    let (name_col, rib_col, skip) = match (name_col, rib_col) {
-        (Some(n), Some(r)) => (n, r, 1),
+    let (name_col, rib_col, amount_col, skip) = match (name_col, rib_col) {
+        (Some(n), Some(r)) => (n, r, amount_col, 1),
         _ => {
             eprintln!("No 'full name' / 'rib' headers found, using column A as name and B as RIB.");
-            (0, 1, 0)
+            (0, 1, None, 0)
         }
     };
 
@@ -117,11 +120,15 @@ pub fn load(path: &Path) -> Result<Directory> {
             if full_name.is_empty() {
                 return None;
             }
+            let amount = amount_col
+                .and_then(|c| row.get(c))
+                .and_then(|a| text::parse_amount(a));
             Some(Entry {
                 row: first_row + i as u32,
                 full_name,
                 rib,
                 rib_digits,
+                amount,
             })
         })
         .collect();

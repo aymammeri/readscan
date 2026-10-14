@@ -39,6 +39,30 @@ const CASE_SERIAL_DIGITS: usize = 6;
 /// Words before the case number on a QUITTANCE ("Dossier Sinistre").
 const CASE_WORDS: [&str; 2] = ["DOSSIER", "SINISTRE"];
 
+/// Label of the amount on a QUITTANCE ("Montant: 574.641,02").
+const AMOUNT_WORD: &str = "MONTANT";
+
+/// The amount of a QUITTANCE, in cents, from its "Montant" line. OCR may glue the label to the
+/// number ("Montant9.500.00").
+pub fn amount(ocr_text: &str) -> Option<u64> {
+    ocr_text.lines().find_map(|line| {
+        let upper = line.to_uppercase();
+        let at = upper
+            .find("ONTANT")
+            .map(|i| i + "ONTANT".len())
+            .or_else(|| {
+                has_word(line, &[AMOUNT_WORD]).then(|| line.find(|c: char| c.is_ascii_digit()))?
+            })?;
+        let after = &line[at..];
+        let digits = after.find(|c: char| c.is_ascii_digit())?;
+        // Only separators and spaces may stand between the label and the number.
+        let gap_ok = after[..digits]
+            .chars()
+            .all(|c| !c.is_alphanumeric() || c.is_whitespace());
+        gap_ok.then(|| crate::text::parse_amount(&after[digits..]))?
+    })
+}
+
 /// Labels of the name fields on a QUITTANCE, most reliable first: "Bénéficiaire de
 /// l'indemnité OMARA BADIS", then "Assuré: OMARA BADIS". Names elsewhere (Par, signatures,
 /// the text below) are never used.
@@ -254,6 +278,20 @@ mod tests {
             Some("LAMRAOUI MOUFIDA")
         );
         assert_eq!(check_holder("Payez contre ce cheque M 12"), None);
+    }
+
+    #[test]
+    fn amount_from_the_montant_line() {
+        use super::amount;
+        assert_eq!(
+            amount("Banque B.E.A\nMontant: 574.641.02\nDate"),
+            Some(57_464_102)
+        );
+        assert_eq!(amount("Montant9.500.00"), Some(950_000));
+        assert_eq!(amount("Montant 30.745.08"), Some(3_074_508));
+        assert_eq!(amount("Montant : 25 000 DA"), Some(2_500_000));
+        assert_eq!(amount("Mantant: 12.549,50"), Some(1_254_950));
+        assert_eq!(amount("N? cheque 1210"), None);
     }
 
     #[test]

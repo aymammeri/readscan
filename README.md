@@ -46,10 +46,10 @@ Pushing a `v*` tag builds both and publishes the release.
 ## How a scan is checked (rules, in order)
 
 **1. Spreadsheet.** First sheet; name and RIB columns found by header (`name`/`nom`, `rib`/`rip`),
-otherwise A and B. A RIB is 20 digits: letters cut it and only the digits after the last letters
+otherwise A and B. An amount column (`montant`/`amount`/`somme`) is used when there is one. A RIB is 20 digits: letters cut it and only the digits after the last letters
 count (`025DZD004...` keeps `004...`). Rows whose RIB is not 20 digits are warned about; a row
 with a name but no RIB is kept and its documents are MISSING RIB.
-Rows with the same name are one person with several accounts.
+Rows with the same name are one person with several claims or accounts.
 
 **2. Reading pages.** Pages are OCR'd in page order (1, 2, 3, ...), each free thread taking the
 next page. Words are detected on the whole page, but only the lines in the top half are read
@@ -144,8 +144,18 @@ paired wrongly, **WRONG PAIR**, when:
 A check whose name and RIB can't be read never makes a WRONG PAIR. A MATCH or STRONG RIB always
 wins over the name.
 
-**Results order.** One line per document, in PDF page order. Spreadsheet rows that no document
-matched follow, as NOT IN PDF (a person whose other RIB was matched is told which pages show it).
+**Results order.** The results follow the spreadsheet: one line per row, on the same row number
+as in the input spreadsheet, so the two line up. A row with no document is NOT IN PDF. Then, in
+PDF order, the documents with no row of their own: claims not in the spreadsheet, duplicates,
+stray pages and names not found.
+
+**Claims and amounts.** A person with several rows can have several claims. A document takes a
+row of its person with the RIB its check shows; when several rows fit, the amount on the
+QUITTANCE ("Montant: 5.500,00") picks the row with the same amount, then a full MATCH goes
+first, then PDF order. A document left without a row is a claim that is not in the original
+spreadsheet: **NOT IN SHEET** (yellow), listed below the spreadsheet rows. A document that is
+already red stays red and moves below too, its details starting with "Claim not in the original
+spreadsheet."
 
 **9. Digits.** The `RIB` and `Scan RIB read` cells and the terminal color every digit:
 **green** right digit in the right place, **red** wrong digit for that place (a digit of the RIB
@@ -157,8 +167,9 @@ tiers. `Scan details` ends with the counts, e.g. "Digits: 13 right, 0 wrong, 7 u
 - **green (MATCH)**: all 20 digits of one of that person's RIBs, or all 12 account digits with a
   good key
 - **blue (STRONG)**: 8 to 11 of the 12 account digits match, or the person was found only through the check
-- **yellow (PARTIAL)**: 6 or 7 account digits match
+- **yellow (NOT IN SHEET)**: a claim scanned with no row in the spreadsheet, listed at the bottom
 - **red**, needs action:
+  - **PARTIAL**: 6 or 7 account digits match
   - **WEAK**: 4 or 5 account digits match
   - **MISMATCH**: a clean 20-digit RIB on the check that is not the person's
   - **WRONG PAIR**: the check names another person than the QUITTANCE
@@ -176,7 +187,7 @@ written instead).
 
 1. `Summary` sheet (opens first): run info, totals per result (the red total first, then
    each red result below it, as in the terminal), page issues, digit colors
-2. `Results` sheet, in PDF page order: `Pages`, `Result`, `Scan details`, `Scan RIB read`,
+2. `Results` sheet, in spreadsheet order (see Results order above): `Pages`, `Result`, `Scan details`, `Scan RIB read`,
    `RIB`, `Sheet row` (the RIB's row number in the input spreadsheet), `Full name`,
    `Case number`, each line colored by its result
 

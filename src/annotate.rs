@@ -63,7 +63,9 @@ fn note_lines(dir: &Directory, d: &DocResult) -> Vec<String> {
         format!("{:<LABEL_WIDTH$}{case}", "Case number:"),
     ];
     let shown: Vec<usize> = match (
-        d.matched_entry.or(d.reading.as_ref().map(|r| r.entry)),
+        d.row_entry
+            .or(d.matched_entry)
+            .or(d.reading.as_ref().map(|r| r.entry)),
         d.person,
     ) {
         (Some(e), _) => vec![e],
@@ -85,7 +87,11 @@ fn note_lines(dir: &Directory, d: &DocResult) -> Vec<String> {
             "Name:", entry.full_name, entry.row
         ));
         lines.push(format!("{:<LABEL_WIDTH$}{rib}", "Spreadsheet RIB:"));
-        let Some(reading) = d.reading.as_ref().filter(|r| r.entry == e) else {
+        let Some(reading) = d
+            .reading
+            .as_ref()
+            .filter(|r| dir.entries[r.entry].rib_digits == entry.rib_digits)
+        else {
             continue;
         };
         lines.push(format!(

@@ -125,6 +125,7 @@ fn run(threads: usize) -> Result<()> {
 
     let mut results = results;
     document::flag_duplicates(&mut results);
+    document::assign_rows(&dir, &mut results);
     let seconds = started.elapsed().as_secs_f32();
     println!("\nFinished in {seconds:.1}s.\n");
     let rows = report::result_rows(&dir, &results);

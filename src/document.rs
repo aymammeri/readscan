@@ -8,6 +8,7 @@ use crate::report::{DocResult, Status};
 use crate::rib::{self, RibMatch};
 use crate::scan::{self, PageText, Scanner, Turn};
 use crate::sheet::Directory;
+use crate::text;
 
 /// Text shorter than this (in letters/digits) means OCR got nothing usable from the page.
 const MIN_READABLE_CHARS: usize = 3;
@@ -56,6 +57,12 @@ pub fn process_document(
             .as_ref()
             .ok()
             .and_then(|t| matcher::case_number(&t.text));
+    }
+    if result.amount.is_none() {
+        result.amount = texts[name_page]
+            .as_ref()
+            .ok()
+            .and_then(|t| matcher::amount(&t.text));
     }
     if result.case.is_none() {
         result.detail = format!(
@@ -114,6 +121,63 @@ fn wrong_pair(
             ))
         }
         _ => None,
+    }
+}
+
+/// Give each document its spreadsheet row. A person can have several rows: several claims, or
+/// several accounts. A document only takes a row of its person with the RIB its check was
+/// compared with (any row when no RIB was read). Rows go first to documents whose QUITTANCE
+/// amount equals the row's amount, then to the others; each time full MATCHes first, then in
+/// PDF order. A document left without a row is a claim that is not in the spreadsheet: NOT IN
+/// SHEET, unless it already has a red result, which stays. Duplicates and stray pages take no
+/// row.
+pub fn assign_rows(dir: &Directory, docs: &mut [DocResult]) {
+    let mut taken = vec![false; dir.entries.len()];
+    let claims: Vec<usize> = (0..docs.len())
+        .filter(|&i| {
+            docs[i].person.is_some() && !matches!(docs[i].status, Status::Duplicate | Status::Order)
+        })
+        .collect();
+    let passes = [(true, true), (true, false), (false, true), (false, false)];
+    for (by_amount, matched_only) in passes {
+        for &i in &claims {
+            let d = &docs[i];
+            if d.row_entry.is_some() || (matched_only && d.status != Status::Match) {
+                continue;
+            }
+            let compared = d.matched_entry.or(d.reading.as_ref().map(|r| r.entry));
+            let fits = |e: usize| {
+                let entry = &dir.entries[e];
+                !taken[e]
+                    && compared.is_none_or(|c| dir.entries[c].rib_digits == entry.rib_digits)
+                    && (!by_amount || (d.amount.is_some() && entry.amount == d.amount))
+            };
+            let person = d.person.expect("claims have a person");
+            if let Some(e) = dir.persons[person]
+                .entry_ids
+                .iter()
+                .copied()
+                .find(|&e| fits(e))
+            {
+                taken[e] = true;
+                docs[i].row_entry = Some(e);
+            }
+        }
+    }
+    for &i in &claims {
+        let d = &mut docs[i];
+        if d.row_entry.is_none() {
+            let amount = d.amount.map_or(String::new(), |a| {
+                format!(" (amount {})", text::format_amount(a))
+            });
+            let note = format!("Claim not in the original spreadsheet{amount}.");
+            if d.status.is_red() {
+                d.detail = format!("{note} {}", d.detail);
+            } else {
+                d.status = Status::NotInSheet;
+                d.detail = format!("{note} Check it.");
+            }
+        }
     }
 }
 
@@ -201,6 +265,7 @@ fn check_document(
                 turned.push((page, turn));
                 if page == name_page {
                     best.case = matcher::case_number(&read.text);
+                    best.amount = matcher::amount(&read.text);
                     fixed_name = Some(read.top);
                 } else {
                     fixed_check = Some(read.text);
@@ -660,6 +725,7 @@ mod tests {
             row,
             full_name: name.to_string(),
             rib: String::new(),
+            amount: None,
             rib_digits: String::new(),
         };
         let dir = Directory::new(vec![

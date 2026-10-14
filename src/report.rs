@@ -6,6 +6,8 @@ use crate::sheet::Directory;
 /// Ordered from worst to best, so comparing results picks the better one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Status {
+    /// A scanned claim with no row of its own in the spreadsheet.
+    NotInSheet,
     NotScanned,
     /// Same full name and case number as an earlier document.
     Duplicate,
@@ -31,7 +33,7 @@ pub enum Status {
 }
 
 impl Status {
-    pub const ALL: [Status; 13] = [
+    pub const ALL: [Status; 14] = [
         Status::Match,
         Status::Strong,
         Status::Partial,
@@ -42,13 +44,15 @@ impl Status {
         Status::NoCheck,
         Status::MissingRib,
         Status::Unreadable,
+        Status::NotInSheet,
         Status::Rotated,
         Status::Order,
         Status::NotScanned,
     ];
 
     /// Results shown in red, in `ALL` order: each needs an action.
-    pub const RED: [Status; 7] = [
+    pub const RED: [Status; 8] = [
+        Status::Partial,
         Status::Weak,
         Status::Mismatch,
         Status::WrongPair,
@@ -97,6 +101,7 @@ impl Status {
             Status::Rotated => "ROTATED",
             Status::Order => "PAGE ORDER",
             Status::NotScanned => "NOT IN PDF",
+            Status::NotInSheet => "NOT IN SHEET",
         }
     }
 
@@ -105,8 +110,9 @@ impl Status {
         match self {
             Status::Match => "FFC6EFCE",
             Status::Strong => "FFBDD7EE",
-            Status::Partial => "FFFFEB9C",
-            Status::Weak
+            Status::NotInSheet => "FFFFEB9C",
+            Status::Partial
+            | Status::Weak
             | Status::Mismatch
             | Status::WrongPair
             | Status::Duplicate
@@ -117,6 +123,12 @@ impl Status {
             Status::Order => "FFF8CBAD",
             Status::NotScanned => "FFD9D9D9",
         }
+    }
+
+    /// Excel fill of a row, so a test can tell the colors apart.
+    #[cfg(test)]
+    fn is_yellow(self) -> bool {
+        self.fill_argb() == "FFFFEB9C"
     }
 
     pub fn meaning(self) -> &'static str {
@@ -134,6 +146,7 @@ impl Status {
             Status::Rotated => "Page rotated or tilted. Rescan it.",
             Status::Order => "Page fits no document. Fix the order.",
             Status::NotScanned => "No check scanned. Scan it.",
+            Status::NotInSheet => "Claim not in the original spreadsheet. Check it.",
         }
     }
 
@@ -141,8 +154,9 @@ impl Status {
         match self {
             Status::Match => text.green(),
             Status::Strong => text.blue(),
-            Status::Partial => text.yellow(),
-            Status::Weak
+            Status::NotInSheet => text.yellow(),
+            Status::Partial
+            | Status::Weak
             | Status::Mismatch
             | Status::WrongPair
             | Status::Duplicate
@@ -177,6 +191,10 @@ pub struct DocResult {
     pub page: usize,
     /// Every page (0-based) of the document, in PDF order.
     pub page_ids: Vec<usize>,
+    /// Amount on the QUITTANCE, in cents.
+    pub amount: Option<u64>,
+    /// The spreadsheet row (entry) this document is listed on, see `document::assign_rows`.
+    pub row_entry: Option<usize>,
 }
 
 impl DocResult {
@@ -194,12 +212,16 @@ impl DocResult {
             case: None,
             page: 0,
             page_ids: Vec::new(),
+            amount: None,
+            row_entry: None,
         }
     }
 }
 
 /// One line of the results: a document, or a spreadsheet row no document matched.
 pub struct ResultRow {
+    /// Row of the input spreadsheet this line stands for; None below them.
+    pub position: Option<u32>,
     pub pages: String,
     pub status: Status,
     pub detail: String,
@@ -229,31 +251,29 @@ impl ResultRow {
     }
 }
 
-/// Documents in PDF page order, then the spreadsheet rows no document matched.
+/// One line per spreadsheet row, in spreadsheet order: the document listed on it, else NOT IN
+/// PDF. Then, in PDF order, the documents with no row: claims not in the spreadsheet,
+/// duplicates, stray pages and unknown names.
 pub fn result_rows(dir: &Directory, docs: &[DocResult]) -> Vec<ResultRow> {
-    let mut rows: Vec<ResultRow> = docs.iter().map(|d| doc_row(dir, d)).collect();
-
+    let mut rows = Vec::new();
     for (id, entry) in dir.entries.iter().enumerate() {
-        let person = dir.person_of(id);
-        let person_docs: Vec<&DocResult> =
-            docs.iter().filter(|d| d.person == Some(person)).collect();
-        // Listed already: matched, or a failing document of this person shows this RIB (or
-        // all of the person's RIBs).
-        let listed = person_docs.iter().any(|d| {
-            d.matched_entry == Some(id)
-                || (d.matched_entry.is_none() && d.reading.as_ref().is_none_or(|r| r.entry == id))
-        });
-        if listed {
+        if let Some(d) = docs.iter().find(|d| d.row_entry == Some(id)) {
+            rows.push(doc_row(dir, d));
             continue;
         }
-        let detail = match person_docs.first() {
+        let person = dir.person_of(id);
+        let other = docs
+            .iter()
+            .find(|d| d.person == Some(person) && d.row_entry.is_some());
+        let detail = match other {
             Some(d) => format!(
-                "No check for this RIB (pages {} show another). Scan it.",
-                d.pages
+                "Row {}: not in the PDF (pages {} are another row). Scan it.",
+                entry.row, d.pages
             ),
             None => format!("Row {}: not in the PDF. Scan it.", entry.row),
         };
         rows.push(ResultRow {
+            position: Some(entry.row),
             pages: String::new(),
             status: Status::NotScanned,
             detail,
@@ -266,14 +286,20 @@ pub fn result_rows(dir: &Directory, docs: &[DocResult]) -> Vec<ResultRow> {
             case: String::new(),
         });
     }
+    rows.extend(
+        docs.iter()
+            .filter(|d| d.row_entry.is_none())
+            .map(|d| doc_row(dir, d)),
+    );
     rows
 }
 
 fn doc_row(dir: &Directory, d: &DocResult) -> ResultRow {
-    // The RIB shown: the one matched, else the one the reading was lined up on, else all of
-    // the person's RIBs.
+    // The RIB shown: the document's row, else the one matched, else the one the reading was
+    // lined up on, else all of the person's RIBs.
     let entry = d
-        .matched_entry
+        .row_entry
+        .or(d.matched_entry)
         .or_else(|| d.reading.as_ref().map(|r| r.entry));
     let (rib, rib_digits, sheet_row) = match (entry, d.person) {
         (Some(e), _) => (
@@ -301,7 +327,14 @@ fn doc_row(dir: &Directory, d: &DocResult) -> ResultRow {
         .as_ref()
         .filter(|_| !rib_digits.is_empty())
         .map(|r| r.aligned.clone());
+    // A claim not in the spreadsheet has no row of its own.
+    let sheet_row = if d.status == Status::NotInSheet {
+        String::new()
+    } else {
+        sheet_row
+    };
     ResultRow {
+        position: d.row_entry.map(|e| dir.entries[e].row),
         pages: d.pages.clone(),
         status: d.status,
         detail: d.detail.clone(),
@@ -371,7 +404,10 @@ fn paint_marks(aligned: &str, marks: &[Mark]) -> String {
 /// The results as in the results file: pages, case number, result, details, RIB read, RIB,
 /// full name.
 pub fn print_results(rows: &[ResultRow], docs: &[DocResult]) {
-    println!("{}", "Results (PDF page order)".bold());
+    println!(
+        "{}",
+        "Results (spreadsheet order, then documents not in it)".bold()
+    );
     for r in rows {
         let read = match (r.aligned.as_deref(), r.marks()) {
             (Some(aligned), Some(marks)) => paint_marks(aligned, &marks),
@@ -383,7 +419,7 @@ pub fn print_results(rows: &[ResultRow], docs: &[DocResult]) {
             r.case.clone()
         };
         let head = format!("  {:<7} ", r.pages);
-        let status = format!(" {:<11}", r.status.label());
+        let status = format!(" {:<12}", r.status.label());
         println!(
             "{}{case:<16}{} {} {read} {}",
             r.status.paint(&head),
@@ -438,6 +474,7 @@ mod tests {
             row,
             full_name: full_name.to_string(),
             rib: rib.to_string(),
+            amount: None,
             rib_digits: rib.to_string(),
         };
         Directory::new(vec![
@@ -461,43 +498,110 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rows_follow_pdf_order_then_rows_not_in_pdf() {
+    /// Documents get their rows as in a run.
+    fn rows_of(docs: &mut [DocResult]) -> Vec<ResultRow> {
         let dir = directory();
-        let docs = [
+        crate::document::assign_rows(&dir, docs);
+        result_rows(&dir, docs)
+    }
+
+    #[test]
+    fn rows_follow_the_spreadsheet_then_documents_not_in_it() {
+        let mut docs = [
             doc("1-2", Some(1), None, Status::Unreadable),
             doc("3-4", Some(0), Some(1), Status::Match),
+            doc("5-6", None, None, Status::Unreadable),
         ];
-        let rows = result_rows(&dir, &docs);
+        let rows = rows_of(&mut docs);
         let pages: Vec<&str> = rows.iter().map(|r| r.pages.as_str()).collect();
-        assert_eq!(pages, vec!["1-2", "3-4", ""]);
-        assert_eq!(rows[0].rib, "333");
+        assert_eq!(pages, vec!["", "3-4", "1-2", "5-6"]);
+        let positions: Vec<Option<u32>> = rows.iter().map(|r| r.position).collect();
+        assert_eq!(positions, vec![Some(2), Some(3), Some(4), None]);
+        assert_eq!(rows[0].status, Status::NotScanned);
+        assert!(rows[0].detail.contains("pages 3-4 are another row"));
         assert_eq!(rows[1].rib, "222");
-        assert_eq!(rows[2].rib, "111");
-        assert_eq!(rows[2].status, Status::NotScanned);
+        assert_eq!(rows[2].rib, "333");
     }
 
     #[test]
-    fn other_rib_of_a_matched_person_is_not_in_pdf() {
-        let dir = directory();
-        let rows = result_rows(&dir, &[doc("1-2", Some(0), Some(0), Status::Match)]);
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[1].rib, "222");
-        assert!(rows[1].detail.contains("pages 1-2 show another"));
-    }
-
-    #[test]
-    fn failing_document_shows_the_rib_it_was_compared_with() {
-        let dir = directory();
+    fn failing_document_takes_the_row_of_the_rib_it_was_compared_with() {
         let mut failing = doc("1-2", Some(0), None, Status::Mismatch);
         failing.reading = Some(Reading {
             entry: 1,
             aligned: "999".to_string(),
         });
-        let rows = result_rows(&dir, &[failing]);
-        assert_eq!(rows[0].rib, "222");
-        assert_eq!(rows[0].aligned.as_deref(), Some("999"));
-        assert_eq!(rows[1].rib, "111", "the other RIB is still listed");
+        let rows = rows_of(&mut [failing]);
+        assert_eq!(rows[0].rib, "111");
+        assert_eq!(rows[0].status, Status::NotScanned);
+        assert_eq!(rows[1].rib, "222");
+        assert_eq!(rows[1].aligned.as_deref(), Some("999"));
+    }
+
+    #[test]
+    fn amount_tells_claims_of_one_person_apart() {
+        let entry = |row, amount| Entry {
+            row,
+            full_name: "Douadi Amel".to_string(),
+            rib: "444".to_string(),
+            amount: Some(amount),
+            rib_digits: "444".to_string(),
+        };
+        let dir = Directory::new(vec![entry(2, 550_000), entry(3, 1_200_000)]);
+        let claim = |pages: &str, amount| DocResult {
+            person: Some(0),
+            matched_entry: Some(0),
+            status: Status::Match,
+            amount,
+            ..DocResult::new(pages.to_string())
+        };
+        let mut docs = [
+            claim("1-2", Some(1_200_000)),
+            claim("3-4", Some(990_000)),
+            claim("5-6", Some(550_000)),
+        ];
+        crate::document::assign_rows(&dir, &mut docs);
+        let rows = result_rows(&dir, &docs);
+        let pages: Vec<&str> = rows.iter().map(|r| r.pages.as_str()).collect();
+        assert_eq!(pages, vec!["5-6", "1-2", "3-4"]);
+        assert_eq!(rows[2].status, Status::NotInSheet);
+        assert_eq!(rows[2].position, None);
+        assert_eq!(rows[2].sheet_row, "");
+        assert_eq!(
+            rows[2].detail,
+            "Claim not in the original spreadsheet (amount 9.900,00). Check it."
+        );
+        assert!(Status::NotInSheet.is_yellow() && !Status::NotInSheet.is_red());
+    }
+
+    #[test]
+    fn red_claim_not_in_the_spreadsheet_stays_red_below() {
+        let mut docs = [
+            doc("1-2", Some(1), Some(2), Status::WrongPair),
+            doc("3-4", Some(1), Some(2), Status::Strong),
+            doc("5-6", Some(1), Some(2), Status::Match),
+        ];
+        let rows = rows_of(&mut docs);
+        assert_eq!(rows[2].pages, "5-6", "the full match takes the row");
+        assert_eq!(rows[3].pages, "1-2");
+        assert_eq!(rows[3].status, Status::WrongPair);
+        assert!(
+            rows[3]
+                .detail
+                .starts_with("Claim not in the original spreadsheet.")
+        );
+        assert_eq!(rows[4].status, Status::NotInSheet);
+    }
+
+    #[test]
+    fn without_amounts_claims_take_rows_in_pdf_order() {
+        let mut docs = [
+            doc("1-2", Some(1), Some(2), Status::Match),
+            doc("3-4", Some(1), Some(2), Status::Match),
+        ];
+        let rows = rows_of(&mut docs);
+        assert_eq!(rows[2].pages, "1-2");
+        assert_eq!(rows[3].pages, "3-4");
+        assert_eq!(rows[3].status, Status::NotInSheet);
     }
 
     #[test]
@@ -512,5 +616,6 @@ mod tests {
             assert_eq!(status.is_red(), red, "{status:?}");
         }
         assert!(Status::Weak.is_tier() && !Status::Match.is_tier() && !Status::Mismatch.is_match());
+        assert!(Status::Partial.is_red(), "PARTIAL is checked by hand");
     }
 }
