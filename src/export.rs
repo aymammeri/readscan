@@ -122,7 +122,6 @@ fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
 fn mark_argb(mark: Mark) -> &'static str {
     match mark {
         Mark::Bull => "FF006100",
-        Mark::Cow => "FFC65911",
         Mark::Miss => "FF9C0006",
         Mark::NotRead => "FF808080",
     }
@@ -224,9 +223,8 @@ fn write_summary(sheet: &mut Worksheet, rows: &[ResultRow], docs: &[DocResult], 
 
     out.bold_row(&["RIB digit colors"]);
     for (mark, meaning) in [
-        (Mark::Bull, "Right digit, right place"),
-        (Mark::Cow, "Right digit, wrong place"),
-        (Mark::Miss, "Wrong digit"),
+        (Mark::Bull, "Right digit in the right place"),
+        (Mark::Miss, "Wrong digit for this place"),
         (Mark::NotRead, "Unread"),
     ] {
         let row = out.row;

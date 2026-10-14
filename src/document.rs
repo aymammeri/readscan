@@ -67,10 +67,14 @@ pub fn process_document(
     result
 }
 
-/// Secondary rule, only when the RIB did not confirm the document: the check names another
-/// person of the spreadsheet than the QUITTANCE, and not the QUITTANCE's person. The pages are
-/// paired wrongly. A check whose name can't be read, or names someone whose name looks like
-/// the QUITTANCE's, never makes a WRONG PAIR.
+/// Secondary rule, only when the RIB did not confirm the document. The pages are paired
+/// wrongly when the QUITTANCE's name is not on the check and either:
+/// - the check names another person of the spreadsheet, whose name does not look like the
+///   QUITTANCE's;
+/// - the check shows another RIB with a good key (a MISMATCH), so it is surely someone
+///   else's check, even one not in the spreadsheet.
+///
+/// A check whose name and RIB both can't be read never makes a WRONG PAIR.
 fn wrong_pair(
     dir: &Directory,
     result: &DocResult,
@@ -89,22 +93,28 @@ fn wrong_pair(
         return None;
     };
     let check_text = text_of(check_page).ok()?;
-    let NameMatch::Found(holder) = matcher::find_person(dir, check_text) else {
-        return None;
-    };
-    if holder == named
-        || matcher::look_alike(dir, holder, named)
-        || matcher::names_person(dir, named, check_text)
-    {
+    if matcher::names_person(dir, named, check_text) {
         return None;
     }
-    let row = dir.entries[dir.persons[holder].entry_ids[0]].row;
-    Some(format!(
-        "Page {}: check is for {} (row {row}), not {}. Fix the pairing.",
-        c + 1,
-        dir.person_name(holder),
-        dir.person_name(named)
-    ))
+    let p = c + 1;
+    let name = dir.person_name(named);
+    match matcher::find_person(dir, check_text) {
+        NameMatch::Found(holder) if holder != named && !matcher::look_alike(dir, holder, named) => {
+            let row = dir.entries[dir.persons[holder].entry_ids[0]].row;
+            let holder = dir.person_name(holder);
+            Some(format!(
+                "Page {p}: check is for {holder} (row {row}), not {name}. Fix the pairing."
+            ))
+        }
+        _ if result.status == Status::Mismatch && rib::key_ok(&result.rib_read) => {
+            let holder = matcher::check_holder(check_text)
+                .map_or(String::new(), |h| format!(", made out to \"{h}\""));
+            Some(format!(
+                "Page {p}: check is not for {name} (other RIB{holder}). Fix the pairing."
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// A document with the same full name and case number as an earlier one is a DUPLICATE.
@@ -227,7 +237,12 @@ fn check_document(
             let (result, _) = evaluate(dir, name_page, check_page, name_text, Some(Ok(&both)));
             // Only a complete RIB is kept: a stray digit read differently could otherwise
             // raise a tier by chance.
-            if result.status > best.status && matched_digits(dir, &result) == rib::RIB_LEN {
+            // A RIB with a good key is what is printed, so another person's RIB is kept too.
+            let complete = matched_digits(dir, &result) == rib::RIB_LEN;
+            let other_rib = result.status == Status::Mismatch && rib::key_ok(&result.rib_read);
+            if (result.status > best.status && complete)
+                || (other_rib && best.status != Status::Mismatch)
+            {
                 best = DocResult {
                     rotation: best.rotation.take(),
                     ..result
@@ -679,6 +694,31 @@ mod tests {
         assert!(
             pair(Status::Mismatch, "KHECHAL NABIL", "M. KHECHAI NABIL").is_none(),
             "look alike"
+        );
+
+        // Another RIB with a good key, and a holder who is not in the spreadsheet.
+        let other = |quittance: &str, check: &str| {
+            let result = DocResult {
+                status: Status::Mismatch,
+                rib_read: "00799999000880744783".to_string(),
+                ..DocResult::new("9-10".to_string())
+            };
+            let quittance = format!("Bénéficiaire de l'indemnité {quittance}");
+            wrong_pair(&dir, &result, &page(&quittance), &page(check), 9)
+        };
+        assert_eq!(
+            other("SARAH BENALI", "0008807447 83 M.BOUYEDDOUNHAKIM 04 RUE").as_deref(),
+            Some(
+                "Page 10: check is not for Sarah Benali (other RIB, made out to \"BOUYEDDOUNHAKIM\"). Fix the pairing."
+            )
+        );
+        assert!(
+            other("SARAH BENALI", "Payez").is_some_and(|d| d.contains("(other RIB)")),
+            "no holder read"
+        );
+        assert!(
+            other("SARAH BENALI", "MME SARAH BENALI").is_none(),
+            "her own other account"
         );
     }
 }

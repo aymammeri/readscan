@@ -171,6 +171,30 @@ pub fn look_alike(dir: &Directory, a: usize, b: usize) -> bool {
     normalized_levenshtein(&compact(a), &compact(b)) >= WORD_SIMILARITY
 }
 
+/// Titles printed before the account holder's name on a check ("M.BOUYEDDOUN HAKIM").
+const HOLDER_TITLES: [&str; 4] = ["M", "MR", "MME", "MLLE"];
+
+/// The account holder's name as printed on a check, as read: the words after "M.", "MME"...
+pub fn check_holder(ocr_text: &str) -> Option<String> {
+    ocr_text.lines().find_map(|line| {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        words.iter().enumerate().find_map(|(i, word)| {
+            let (title, glued) = word.split_once('.').unwrap_or((word, ""));
+            if !HOLDER_TITLES.contains(&title.to_ascii_uppercase().as_str()) {
+                return None;
+            }
+            let name: Vec<&str> = std::iter::once(glued)
+                .chain(words[i + 1..].iter().copied())
+                .filter(|w| !w.is_empty())
+                .take_while(|w| w.chars().all(|c| c.is_alphabetic()))
+                .take(3)
+                .collect();
+            let letters: usize = name.iter().map(|w| w.len()).sum();
+            (letters >= 5).then(|| name.join(" "))
+        })
+    })
+}
+
 /// True when the page shows `person`'s name.
 pub fn names_person(dir: &Directory, person: usize, ocr_text: &str) -> bool {
     PageWords::of(ocr_text)
@@ -216,6 +240,20 @@ mod tests {
         assert!(has_title("Quittance de reglement"));
         assert!(has_title("QUITTANCEDEREGLEMENT"));
         assert!(has_title("QU1TTANCE DE REGLEMEN"));
+    }
+
+    #[test]
+    fn check_holder_after_title() {
+        use super::check_holder;
+        assert_eq!(
+            check_holder("A 0000828557 63 M.BENTCHIKOL FADIL NORDINE RUF").as_deref(),
+            Some("BENTCHIKOL FADIL NORDINE")
+        );
+        assert_eq!(
+            check_holder("MME LAMRAOUI MOUFIDA\n05015").as_deref(),
+            Some("LAMRAOUI MOUFIDA")
+        );
+        assert_eq!(check_holder("Payez contre ce cheque M 12"), None);
     }
 
     #[test]

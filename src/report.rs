@@ -25,7 +25,7 @@ pub enum Status {
     Weak,
     /// 6 or 7 of the 12 account and key digits match.
     Partial,
-    /// 8 to 12 of the 12 account and key digits match.
+    /// 8 to 11 of the 12 account and key digits match (12 when the RIB's key is wrong).
     Strong,
     Match,
 }
@@ -121,7 +121,7 @@ impl Status {
 
     pub fn meaning(self) -> &'static str {
         match self {
-            Status::Match => "All 20 RIB digits match.",
+            Status::Match => "All 20 RIB digits, or all 12 account digits with a good key, match.",
             Status::Strong => "8+ of 12 account digits match. Check the rest by hand.",
             Status::Partial => "6 or 7 of 12 account digits match. Check by hand.",
             Status::Weak => "4 or 5 of 12 account digits match. Check by hand.",
@@ -332,12 +332,11 @@ pub fn page_issues(docs: &[DocResult]) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// Count of each mark, skipping zeros, as "13 right, 1 misplaced, 6 unread".
+/// Count of each mark, skipping zeros, as "13 right, 1 wrong, 6 unread".
 pub fn describe_marks(marks: &[Mark]) -> String {
     let n = |m: Mark| marks.iter().filter(|&&x| x == m).count();
     [
         (Mark::Bull, "right"),
-        (Mark::Cow, "misplaced"),
         (Mark::Miss, "wrong"),
         (Mark::NotRead, "unread"),
     ]
@@ -357,7 +356,6 @@ fn paint_marks(aligned: &str, marks: &[Mark]) -> String {
             let c = c.to_string();
             match mark {
                 Mark::Bull => c.green().bold(),
-                Mark::Cow => c.yellow().bold(),
                 Mark::Miss => c.red().bold(),
                 Mark::NotRead => c.dimmed(),
             }
@@ -391,10 +389,9 @@ pub fn print_results(rows: &[ResultRow], docs: &[DocResult]) {
         );
     }
     println!(
-        "  RIB digits read on the check: {}  {}  {}  {}",
-        "right place".green().bold(),
-        "wrong place".yellow().bold(),
-        "not in RIB".red().bold(),
+        "  RIB digits read on the check: {}  {}  {}",
+        "right".green().bold(),
+        "wrong".red().bold(),
         "? unread".dimmed()
     );
 

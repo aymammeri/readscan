@@ -207,37 +207,26 @@ pub struct RibCheck {
     pub reading: Option<Reading>,
 }
 
-/// Bulls and cows of one read digit against the expected RIB.
+/// One read digit against the expected RIB. Only the right digit in the right place counts;
+/// a digit of the RIB read in another place is simply wrong.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mark {
     /// Right digit in the right place.
     Bull,
-    /// Wrong here, but this digit belongs elsewhere in the RIB.
-    Cow,
-    /// Not in the RIB (or more copies than the RIB has).
+    /// Wrong digit for this place.
     Miss,
     NotRead,
 }
 
-/// Score `aligned` against `expected` position by position, like bulls and cows.
+/// Score `aligned` against `expected` position by position.
 pub fn score(expected: &str, aligned: &str) -> Vec<Mark> {
-    let expected = expected.as_bytes();
     let read = aligned.as_bytes();
-    let is_bull = |i: usize| read.get(i) == expected.get(i);
-    let mut spare = [0usize; 256];
-    for (i, &digit) in expected.iter().enumerate() {
-        if !is_bull(i) {
-            spare[digit as usize] += 1;
-        }
-    }
-    (0..expected.len())
-        .map(|i| match read.get(i) {
+    expected
+        .bytes()
+        .enumerate()
+        .map(|(i, digit)| match read.get(i) {
             None | Some(b'?') => Mark::NotRead,
-            Some(_) if is_bull(i) => Mark::Bull,
-            Some(&digit) if spare[digit as usize] > 0 => {
-                spare[digit as usize] -= 1;
-                Mark::Cow
-            }
+            Some(&r) if r == digit => Mark::Bull,
             Some(_) => Mark::Miss,
         })
         .collect()
@@ -268,6 +257,39 @@ fn spans(row: &[String]) -> impl Iterator<Item = String> + '_ {
         .flat_map(move |start| (start + 1..=row.len()).map(move |end| row[start..end].concat()))
 }
 
+/// Bank and agency code: the first 8 digits, shared by every RIB of a branch.
+const BRANCH_DIGITS: usize = RIB_LEN - ACCOUNT_AND_KEY;
+
+/// Full RIBs with a good key read on the check, wherever they are printed:
+/// - a span of exactly 20 digits;
+/// - the first or last 20 digits of a longer span, when a number printed next to the RIB
+///   is glued to it ("4011199 00799999000880744783");
+/// - an account and key printed on their own ("0000828557 63"), completed with the bank and
+///   agency code of one of the expected RIBs.
+fn keyed_readings(rows: &[Vec<String>], ribs: &[(usize, &str)]) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for digits in rows.iter().flat_map(|row| spans(row)) {
+        let candidates: Vec<String> = match digits.len() {
+            RIB_LEN => vec![digits],
+            n if n > RIB_LEN => vec![
+                digits[..RIB_LEN].to_string(),
+                digits[n - RIB_LEN..].to_string(),
+            ],
+            ACCOUNT_AND_KEY => ribs
+                .iter()
+                .map(|(_, rib)| format!("{}{digits}", &rib[..BRANCH_DIGITS]))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for candidate in candidates {
+            if key_ok(&candidate) && !found.contains(&candidate) {
+                found.push(candidate);
+            }
+        }
+    }
+    found
+}
+
 /// Look for any of `entry_ids`' RIBs in the OCR text of a check page. Rules, in order:
 ///
 /// 1. Each row is cut into digit pieces (see [`chunks`]).
@@ -275,11 +297,14 @@ fn spans(row: &[String]) -> impl Iterator<Item = String> + '_ {
 ///    consecutive rows joined. Also MATCH, when the RIB's key is right: a reading with a good
 ///    key that differs only in the bank code (not covered by the key), or the account and key
 ///    printed on their own (12 digits, "0000015098 17").
-/// 3. MISMATCH: a reading with a good key that is none of the RIBs. The check really shows
-///    another RIB, however many digits it shares (postal RIBs all start with 00799999).
+/// 3. MISMATCH: a reading with a good key that is none of the RIBs (see [`keyed_readings`]).
+///    The check really shows another RIB, however many digits it shares (postal RIBs all
+///    start with 00799999).
 /// 4. Otherwise each row's pieces are laid on each RIB where they share the longest run of
-///    digits, and the best reading gets a tier by its matching account and key digits (the
-///    last 12), wherever they are: STRONG 8 to 12, PARTIAL 6 or 7, WEAK 4 or 5.
+///    digits. MATCH when all 12 account and key digits are right and the RIB's key is good:
+///    only the bank and agency code was misread. Otherwise the best reading gets a tier by its
+///    matching account and key digits (the last 12), wherever they are: STRONG 8 to 11,
+///    PARTIAL 6 or 7, WEAK 4 or 5.
 /// 5. MISMATCH: otherwise, a clean 20-digit number was read and it is not the RIB.
 /// 6. UNREADABLE: otherwise; whatever digits were read are listed for a manual check.
 pub fn check(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibCheck {
@@ -298,11 +323,7 @@ pub fn check(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibCheck {
         };
     }
 
-    let keyed = rows
-        .iter()
-        .flat_map(|row| spans(row))
-        .find(|digits| key_ok(digits));
-    if let Some(read) = keyed {
+    if let Some(read) = keyed_readings(&rows, &ribs).into_iter().next() {
         let (closest, _) = closest(&read, &ribs);
         return RibCheck {
             outcome: RibMatch::Mismatch { read: read.clone() },
@@ -314,6 +335,20 @@ pub fn check(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibCheck {
     }
 
     let best = best_reading(&rows, &ribs);
+    if let Some((reading, agreement)) = &best
+        && agreement.matched == ACCOUNT_AND_KEY
+        && key_ok(&dir.entries[reading.entry].rib_digits)
+    {
+        let entry = reading.entry;
+        let aligned = dir.entries[entry].rib_digits.clone();
+        return RibCheck {
+            outcome: RibMatch::Full {
+                entry,
+                joined: true,
+            },
+            reading: Some(Reading { entry, aligned }),
+        };
+    }
     if let Some((reading, agreement)) = &best
         && let Some(tier) = agreement.tier()
     {
@@ -386,13 +421,12 @@ fn full_match(rows: &[Vec<String>], ribs: &[(usize, &str)]) -> Option<(usize, bo
 /// or the RIB's own account and key printed together.
 fn keyed_match(rows: &[Vec<String>], ribs: &[(usize, &str)]) -> Option<(usize, bool)> {
     let readings: Vec<String> = rows.iter().flat_map(|row| spans(row)).collect();
+    let keyed = keyed_readings(rows, ribs);
     ribs.iter()
         .filter(|(_, rib)| key_ok(rib))
         .find_map(|&(entry, rib)| {
-            let bank_misread = readings
-                .iter()
-                .any(|r| key_ok(r) && r[BANK_DIGITS..] == rib[BANK_DIGITS..]);
-            let account = &rib[RIB_LEN - ACCOUNT_AND_KEY..];
+            let bank_misread = keyed.iter().any(|r| r[BANK_DIGITS..] == rib[BANK_DIGITS..]);
+            let account = &rib[BRANCH_DIGITS..];
             let printed_alone = readings.iter().any(|r| r == account);
             (bank_misread || printed_alone).then_some((entry, printed_alone && !bank_misread))
         })
@@ -572,9 +606,45 @@ mod tests {
     }
 
     #[test]
-    fn bulls_and_cows() {
+    fn other_rib_glued_to_a_number_or_printed_as_account_is_a_mismatch() {
+        let dir = keyed_directory();
+        let mismatch = |text: &str| match check(&dir, &[0], text).outcome {
+            RibMatch::Mismatch { read } => Some(read),
+            _ => None,
+        };
+        let other = "00799999000880744783";
+        assert_eq!(
+            mismatch("Serie AP 4011199 00799999000880744783").as_deref(),
+            Some(other)
+        );
+        assert_eq!(
+            mismatch("A 0008807447 83 M.BOUYEDDOUN").as_deref(),
+            Some(other)
+        );
+        assert_eq!(mismatch("A 0008807447 84 M.BOUYEDDOUN"), None, "key wrong");
+        let full = |text: &str| matches!(check(&dir, &[0], text).outcome, RibMatch::Full { .. });
+        assert!(full("Serie 4163130 00799999000001509817"));
+    }
+
+    #[test]
+    fn all_account_digits_right_with_a_good_key_is_a_match() {
+        let dir = keyed_directory();
+        let full = |text: &str| matches!(check(&dir, &[0], text).outcome, RibMatch::Full { .. });
+        assert!(full("Serie 5204136 ????9999000001509817 X"));
+        assert!(full("0O7 9999#000001509817"), "bank and agency garbled");
+        assert!(!full("00799999#00000150981"), "11 of 12");
+        // RIB_A's key is wrong, so 12/12 stays STRONG.
+        assert_eq!(tier("## 012345678912"), Some(Tier::Strong));
+    }
+
+    #[test]
+    fn only_right_digit_in_right_place_counts() {
         use Mark::*;
-        assert_eq!(score("1234", "1243"), vec![Bull, Bull, Cow, Cow]);
+        assert_eq!(
+            score("1234", "1243"),
+            vec![Bull, Bull, Miss, Miss],
+            "swapped is wrong"
+        );
         assert_eq!(score("1234", "1299"), vec![Bull, Bull, Miss, Miss]);
         assert_eq!(score("1234", "12??"), vec![Bull, Bull, NotRead, NotRead]);
         assert_eq!(score("1122", "2222"), vec![Miss, Miss, Bull, Bull]);

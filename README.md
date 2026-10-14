@@ -87,13 +87,18 @@ document is never better than STRONG ("Check the name."). Otherwise it is UNREAD
    key), or the account and key printed on their own (`0000015098 17` on Algérie Poste checks)
 3. **MISMATCH**: a reading with a good key that is none of the person's RIBs. A single misread
    digit always breaks the key, so the check really shows another RIB, however many digits it
-   shares (every postal RIB starts with `00799999`)
+   shares (every postal RIB starts with `00799999`). Such a reading is also found when another
+   number is glued to the RIB (`4011199 00799999000880744783`, the first or last 20 digits are
+   tried), and from an account and key printed on their own (`0008807447 83`), completed with
+   the bank and agency code of the person's RIB. The second read at 200 DPI keeps it too
 4. otherwise each row's pieces are laid on the RIB where they share the longest run of digits
    (from the left, the right or the middle), and the reading gets a tier by how many of the
    **12 account digits** (account number and key, digits 9 to 20) match, wherever they are.
    The bank and agency code in front (digits 1 to 8) is shared by every customer of the branch
-   (every postal RIB starts with `00799999`), so it never counts:
-   - **STRONG**: 8 to 12
+   (every postal RIB starts with `00799999`), so it never counts. All 12 right is a **MATCH**
+   when the RIB's key is good (the key covers the agency and account, so only the bank and agency
+   code was misread). Otherwise:
+   - **STRONG**: 8 to 11 (or 12 with a bad key in the spreadsheet)
    - **PARTIAL**: 6 or 7
    - **WEAK**: 4 or 5
 
@@ -127,24 +132,31 @@ name with another case number is a separate case. A case number that can't be re
 duplicate.
 
 **8. Wrong pair (secondary rule).** Only when the RIB did not confirm the document (PARTIAL, WEAK,
-MISMATCH, MISSING RIB or UNREADABLE): if the check names another person of the spreadsheet than the
-QUITTANCE, and not the QUITTANCE's person, the pages are paired wrongly: **WRONG PAIR** ("Page 4:
-check is for Karim Haddad (row 3), not Sarah Benali. Fix the pairing."). A check whose name
-can't be read, or whose name looks like the QUITTANCE's (OCR typos), never makes a WRONG PAIR.
-A MATCH or STRONG RIB always wins over the name.
+MISMATCH, MISSING RIB or UNREADABLE), and the QUITTANCE's name is not on the check. The pages are
+paired wrongly, **WRONG PAIR**, when:
+
+- the check names another person of the spreadsheet ("Page 4: check is for Karim Haddad (row 3),
+  not Sarah Benali. Fix the pairing."), unless the two names differ only by OCR typos
+- or the check shows another RIB with a good key (a MISMATCH): it is someone else's check, even
+  someone not in the spreadsheet ("Page 10: check is not for IDIOU SAMIR (other RIB, made out to
+  "BOUYEDDOUNHAKIM"). Fix the pairing."). The name after `M.`, `MME` or `MLLE` is shown when read
+
+A check whose name and RIB can't be read never makes a WRONG PAIR. A MATCH or STRONG RIB always
+wins over the name.
 
 **Results order.** One line per document, in PDF page order. Spreadsheet rows that no document
 matched follow, as NOT IN PDF (a person whose other RIB was matched is told which pages show it).
 
-**9. Digits, bulls and cows.** The `RIB` and `Scan RIB read` cells and the terminal color every digit:
-**green** right digit in the right place, **orange** a digit of the RIB read in another place,
-**red** a digit not in the RIB, **grey** not readable (`?`). `Scan details` ends with the counts,
-e.g. "Digits: 13 right, 0 misplaced, 0 wrong, 7 not read".
+**9. Digits.** The `RIB` and `Scan RIB read` cells and the terminal color every digit:
+**green** right digit in the right place, **red** wrong digit for that place (a digit of the RIB
+read in another place is wrong too), **grey** not readable (`?`). Only green digits count in the
+tiers. `Scan details` ends with the counts, e.g. "Digits: 13 right, 0 wrong, 7 unread".
 
 ## Results
 
-- **green (MATCH)**: all 20 digits of one of that person's RIBs
-- **blue (STRONG)**: 8 to 12 of the 12 account digits match, or the person was found only through the check
+- **green (MATCH)**: all 20 digits of one of that person's RIBs, or all 12 account digits with a
+  good key
+- **blue (STRONG)**: 8 to 11 of the 12 account digits match, or the person was found only through the check
 - **yellow (PARTIAL)**: 6 or 7 account digits match
 - **red**, needs action:
   - **WEAK**: 4 or 5 account digits match
