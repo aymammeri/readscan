@@ -9,12 +9,13 @@ use crate::report::{
 use crate::rib::Mark;
 
 /// Results sheet columns: header and width.
-const RESULT_COLUMNS: [(&str, f64); 7] = [
+const RESULT_COLUMNS: [(&str, f64); 8] = [
     ("Pages", 9.0),
     ("Result", 12.0),
     ("Scan details", 70.0),
     ("Scan RIB read", 24.0),
     ("RIB", 28.0),
+    ("Sheet row", 10.0),
     ("Full name", 28.0),
     ("Case number", 19.0),
 ];
@@ -92,13 +93,14 @@ fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
                 &detail,
                 read,
                 &r.rib,
+                &r.sheet_row,
                 &r.full_name,
                 &r.case,
             ],
             r.status,
         );
         if r.case == CASE_NOT_READ {
-            let style = out.sheet.style_mut((7, row));
+            let style = out.sheet.style_mut((8, row));
             style.set_background_color(Status::Mismatch.fill_argb());
             style.font_mut().set_bold(true);
         }

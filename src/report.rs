@@ -210,6 +210,9 @@ pub struct ResultRow {
     /// The spreadsheet RIB compared, as written there.
     pub rib: String,
     pub rib_digits: String,
+    /// Row number of the RIB in the input spreadsheet ("4", or "4 | 5" for all of a person's
+    /// RIBs), empty when nobody was found.
+    pub sheet_row: String,
     pub full_name: String,
     /// Case number, `CASE_NOT_READ` when a QUITTANCE was scanned but its number not read.
     pub case: String,
@@ -258,6 +261,7 @@ pub fn result_rows(dir: &Directory, docs: &[DocResult]) -> Vec<ResultRow> {
             read: String::new(),
             rib: entry.rib.clone(),
             rib_digits: entry.rib_digits.clone(),
+            sheet_row: entry.row.to_string(),
             full_name: entry.full_name.clone(),
             case: String::new(),
         });
@@ -271,20 +275,19 @@ fn doc_row(dir: &Directory, d: &DocResult) -> ResultRow {
     let entry = d
         .matched_entry
         .or_else(|| d.reading.as_ref().map(|r| r.entry));
-    let (rib, rib_digits) = match (entry, d.person) {
+    let (rib, rib_digits, sheet_row) = match (entry, d.person) {
         (Some(e), _) => (
             dir.entries[e].rib.clone(),
             dir.entries[e].rib_digits.clone(),
+            dir.entries[e].row.to_string(),
         ),
         (None, Some(p)) => {
-            let ribs: Vec<&str> = dir.persons[p]
-                .entry_ids
-                .iter()
-                .map(|&e| dir.entries[e].rib.as_str())
-                .collect();
-            (ribs.join(" | "), String::new())
+            let entries = || dir.persons[p].entry_ids.iter().map(|&e| &dir.entries[e]);
+            let ribs: Vec<&str> = entries().map(|e| e.rib.as_str()).collect();
+            let rows: Vec<String> = entries().map(|e| e.row.to_string()).collect();
+            (ribs.join(" | "), String::new(), rows.join(" | "))
         }
-        (None, None) => (String::new(), String::new()),
+        (None, None) => (String::new(), String::new(), String::new()),
     };
     // Without a known person, a RIB found on the check tells whose row it is.
     let full_name = match (d.person, entry) {
@@ -312,6 +315,7 @@ fn doc_row(dir: &Directory, d: &DocResult) -> ResultRow {
         read: d.rib_read.clone(),
         rib,
         rib_digits,
+        sheet_row,
         full_name,
     }
 }

@@ -177,7 +177,8 @@ written instead).
 1. `Summary` sheet (opens first): run info, totals per result (the red total first, then
    each red result below it, as in the terminal), page issues, digit colors
 2. `Results` sheet, in PDF page order: `Pages`, `Result`, `Scan details`, `Scan RIB read`,
-   `RIB`, `Full name`, `Case number`, each line colored by its result
+   `RIB`, `Sheet row` (the RIB's row number in the input spreadsheet), `Full name`,
+   `Case number`, each line colored by its result
 
 `<name>_checked.pdf`, written in the same folder, holds only the documents that need a check:
 every document that is not a full MATCH, with both its pages, in PDF order. A MATCH whose case
