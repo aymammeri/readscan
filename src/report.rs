@@ -19,11 +19,11 @@ pub enum Status {
     /// A page is upside down, on its side or too tilted to match.
     Rotated,
     Mismatch,
-    /// 4 or 5 RIB digits match.
+    /// 4 or 5 of the 12 account and key digits match.
     Weak,
-    /// 6 to 10 RIB digits match.
+    /// 6 or 7 of the 12 account and key digits match.
     Partial,
-    /// 11 to 19 RIB digits match.
+    /// 8 to 12 of the 12 account and key digits match.
     Strong,
     Match,
 }
@@ -100,9 +100,9 @@ impl Status {
     pub fn meaning(self) -> &'static str {
         match self {
             Status::Match => "All 20 RIB digits match.",
-            Status::Strong => "11+ RIB digits match. Check the rest by hand.",
-            Status::Partial => "6 to 10 RIB digits match. Check by hand.",
-            Status::Weak => "Under 6 RIB digits match. Check by hand.",
+            Status::Strong => "8+ of 12 account digits match. Check the rest by hand.",
+            Status::Partial => "6 or 7 of 12 account digits match. Check by hand.",
+            Status::Weak => "4 or 5 of 12 account digits match. Check by hand.",
             Status::Mismatch => "Wrong RIB on the check. Verify.",
             Status::Duplicate => "Same name and case number as an earlier document. Remove it.",
             Status::NoCheck => "QUITTANCE without its check. Add the check.",

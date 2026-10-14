@@ -11,8 +11,9 @@ use crate::sheet::Directory;
 
 /// Text shorter than this (in letters/digits) means OCR got nothing usable from the page.
 const MIN_READABLE_CHARS: usize = 3;
-/// RIB digits that must match before a check alone can tell who a document belongs to.
-const IDENTIFY_MIN_DIGITS: usize = 15;
+/// Account and key digits that must match before a check alone can tell who a document
+/// belongs to.
+const IDENTIFY_MIN_DIGITS: usize = 9;
 /// Text slanted more than this is too tilted to read reliably.
 const MAX_TILT_DEGREES: f32 = 10.0;
 
@@ -296,7 +297,7 @@ fn is_readable(text: &str) -> bool {
 ///
 /// 1. The name on the name page is looked up in the spreadsheet. If the page is unreadable,
 ///    or its name matches several people or none, the check's RIB is used to tell who it is
-///    (all 20 digits, or at least `IDENTIFY_MIN_DIGITS`); such a document is never better
+///    (all 20 digits, or at least `IDENTIFY_MIN_DIGITS` of the account and key); such a document is never better
 ///    than STRONG.
 /// 2. The check page must be readable.
 /// 3. The check's RIB is compared with that person's RIBs only (see `rib::check`).
@@ -488,9 +489,9 @@ impl DocResult {
                 self.status = Status::from_tier(tier);
                 self.rib_read = dir.entries[entry].rib.clone();
                 self.detail = format!(
-                    "{}/{} RIB digits match. Check the RIB by hand.",
+                    "{}/{} account digits match. Check the RIB by hand.",
                     a.matched,
-                    rib::RIB_LEN
+                    rib::ACCOUNT_AND_KEY
                 );
             }
             RibMatch::Mismatch { read, .. } => {

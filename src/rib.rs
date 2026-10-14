@@ -10,12 +10,15 @@ use std::collections::HashMap;
 use crate::sheet::Directory;
 
 pub const RIB_LEN: usize = 20;
-/// WEAK: at least this many digits match. Fewer can be chance.
+/// Tiers count only the account and key digits (the last 12). The bank and agency code in
+/// front is shared by every customer of the branch (every postal RIB starts with 00799999),
+/// so it says nothing about whose RIB it is.
+/// WEAK: at least this many account digits match. Fewer can be chance.
 const WEAK_MIN_DIGITS: usize = 4;
-/// PARTIAL: at least this many digits match.
+/// PARTIAL: at least this many account digits match.
 const PARTIAL_MIN_DIGITS: usize = 6;
-/// STRONG: at least this many digits match.
-const STRONG_MIN_DIGITS: usize = 11;
+/// STRONG: at least this many account digits match.
+const STRONG_MIN_DIGITS: usize = 8;
 
 /// How much of a RIB was confirmed when not all 20 digits were.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -25,7 +28,8 @@ pub enum Tier {
     Strong,
 }
 
-/// Digits of `aligned` matching `rib`: anywhere, in a row from the start, in a row from the end.
+/// Digits of `aligned` matching `rib`: account and key digits anywhere, then all digits in a
+/// row from the start and in a row from the end.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Agreement {
     pub matched: usize,
@@ -41,13 +45,17 @@ impl Agreement {
             .map(|(a, b)| a == b)
             .collect();
         Self {
-            matched: same.iter().filter(|s| **s).count(),
+            matched: same
+                .iter()
+                .skip(RIB_LEN - ACCOUNT_AND_KEY)
+                .filter(|s| **s)
+                .count(),
             first: same.iter().take_while(|s| **s).count(),
             last: same.iter().rev().take_while(|s| **s).count(),
         }
     }
 
-    /// Tier by the count of matching digits, wherever they are.
+    /// Tier by the count of matching account and key digits, wherever they are.
     pub fn tier(self) -> Option<Tier> {
         match self.matched {
             m if m >= STRONG_MIN_DIGITS => Some(Tier::Strong),
@@ -238,7 +246,7 @@ pub fn score(expected: &str, aligned: &str) -> Vec<Mark> {
 /// Digits of the bank code, which the RIB key does not cover.
 const BANK_DIGITS: usize = 3;
 /// Account number and key: what a check prints on its own ("0000015098 17").
-const ACCOUNT_AND_KEY: usize = 12;
+pub const ACCOUNT_AND_KEY: usize = 12;
 
 /// The RIB key (last 2 digits) is 97 - (digits 4 to 18 × 100 mod 97). Any single misread digit
 /// breaks it, so a reading with a good key is what is printed. The bank code is not covered.
@@ -270,8 +278,8 @@ fn spans(row: &[String]) -> impl Iterator<Item = String> + '_ {
 /// 3. MISMATCH: a reading with a good key that is none of the RIBs. The check really shows
 ///    another RIB, however many digits it shares (postal RIBs all start with 00799999).
 /// 4. Otherwise each row's pieces are laid on each RIB where they share the longest run of
-///    digits, and the best reading gets a tier by its matching digits, wherever they are:
-///    STRONG 11 to 19, PARTIAL 6 to 10, WEAK 4 or 5.
+///    digits, and the best reading gets a tier by its matching account and key digits (the
+///    last 12), wherever they are: STRONG 8 to 12, PARTIAL 6 or 7, WEAK 4 or 5.
 /// 5. MISMATCH: otherwise, a clean 20-digit number was read and it is not the RIB.
 /// 6. UNREADABLE: otherwise; whatever digits were read are listed for a manual check.
 pub fn check(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibCheck {
@@ -645,24 +653,26 @@ mod tests {
     #[test]
     fn tiers_by_matching_digits() {
         // RIB_A = 00100123012345678912
-        assert_eq!(tier("00100123012 ##"), Some(Tier::Strong), "11");
-        assert_eq!(tier("## 12345678912"), Some(Tier::Strong), "last 11");
-        assert_eq!(tier("0010012301 ##"), Some(Tier::Partial), "10");
-        assert_eq!(tier("## 678912"), Some(Tier::Partial), "6");
+        // Only the account and key count: 012345678912.
+        assert_eq!(tier("## 45678912"), Some(Tier::Strong), "last 8");
+        assert_eq!(tier("0010012301234567 ##"), Some(Tier::Strong), "first 8");
+        assert_eq!(tier("## 5678912"), Some(Tier::Partial), "7");
+        assert_eq!(tier("00100123012345 ##"), Some(Tier::Partial), "6");
         assert_eq!(tier("## 78912"), Some(Tier::Weak), "5");
         assert_eq!(tier("## 3456 ##"), Some(Tier::Weak), "4 in the middle");
         assert_eq!(tier("RIB 0014 ###"), None, "3 digits");
+        assert_eq!(tier("RIB 00100123 ##"), None, "bank and agency only");
     }
 
     #[test]
     fn agreement_counts_both_ends() {
         let a = Agreement::of(RIB_A, "0010012301234500?912");
-        assert_eq!((a.matched, a.first, a.last), (17, 14, 3));
+        assert_eq!((a.matched, a.first, a.last), (9, 14, 3));
     }
 
     #[test]
     fn half_read_rib_is_partial() {
-        assert_eq!(matched("0010012301234 ##"), Some((0, 13)));
+        assert_eq!(matched("0010012301234 ##"), Some((0, 5)));
         assert_eq!(matched("%%  98765432155"), Some((1, 11)));
     }
 
@@ -675,13 +685,13 @@ mod tests {
 
     #[test]
     fn damaged_middle_combines_left_and_right_pieces() {
-        assert_eq!(matched("001001230123 xx# 678912"), Some((0, 18)));
+        assert_eq!(matched("001001230123 xx# 678912"), Some((0, 10)));
     }
 
     #[test]
     fn clean_read_with_wrong_digits_is_still_partial() {
-        assert_eq!(matched("00100123012345000912"), Some((0, 17)));
-        assert_eq!(matched("00100123012345000912\nN° 4412"), Some((0, 17)));
+        assert_eq!(matched("00100123012345000912"), Some((0, 9)));
+        assert_eq!(matched("00100123012345000912\nN° 4412"), Some((0, 9)));
     }
 
     #[test]
@@ -698,23 +708,35 @@ mod tests {
             chunks("001-00123.0#2345~678912", true),
             vec!["001001230", "2345", "678912"]
         );
-        assert_eq!(matched("001001230#2345678912"), Some((0, 19)));
+        assert_eq!(matched("001001230#2345678912"), Some((0, 11)));
     }
 
     #[test]
-    fn four_matching_digits_anywhere_is_partial() {
-        assert_eq!(matched("RIB 0010 ###"), Some((0, 4)));
+    fn four_matching_account_digits_anywhere_is_partial() {
         assert_eq!(matched("### 8912"), Some((0, 4)));
         assert_eq!(matched("## 3456 ##"), Some((0, 4)));
-        assert_eq!(matched("00 ## 12"), Some((0, 4)));
+        assert_eq!(matched("RIB 0010 ###"), None, "bank code");
         assert_eq!(matched("RIB 0014 ###"), None);
+    }
+
+    #[test]
+    fn postal_prefix_alone_gets_no_tier() {
+        let dir = keyed_directory();
+        let tier = |text: &str| match check(&dir, &[0], text).outcome {
+            RibMatch::Partial { tier, .. } => Some(tier),
+            _ => None,
+        };
+        assert_eq!(tier("RIP 00799999 ### ##"), None);
+        // The account's own leading zeros still count, so they alone stay WEAK.
+        assert_eq!(tier("RIP 0079999900000 ###"), Some(Tier::Weak));
+        assert_eq!(tier("RIP 00799999 0000015 ###"), Some(Tier::Partial));
     }
 
     #[test]
     fn best_row_wins_over_a_garbage_row() {
         assert_eq!(
-            matched("98765432109876543210\n0010012301234"),
-            Some((0, 13))
+            matched("77777777777777777777\n0010012301234567"),
+            Some((0, 8))
         );
     }
 

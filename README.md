@@ -63,7 +63,7 @@ Pages pair as (1,2), (3,4), ... until a title page shows up where a check should
 - title page then title page: **check missing**, the first is kept alone (NO CHECK)
 - check, its title page, next title page: **sides swapped**, re-paired and checked normally
 - check before a title page that has its own check: **extra page / name page missing**, set aside
-  (PAGE ORDER) and identified by its RIB when at least 15 digits match
+  (PAGE ORDER) and identified by its RIB when at least 9 of its 12 account digits match
 
 Pairing then resumes at the next title page. A name page whose title OCR misses never shifts the
 pairing. Every issue is listed with its pages in the terminal and on the `Summary` sheet.
@@ -73,7 +73,7 @@ the QUITTANCE: **Bénéficiaire de l'indemnité** first, then **Assuré** when t
 nobody in the spreadsheet. Other names on the page (Par, signatures, the text below) are never
 used. Accents, word order and small OCR typos are tolerated; OCR reads accented letters as `?`,
 which counts as an `E` ("B?n?ficiaire"). If the page is unreadable, or the name matches nobody or several
-people, or neither field was read, the check's RIB decides when all 20 digits, or at least 15, match one of them. Such a
+people, or neither field was read, the check's RIB decides when all 20 digits, or at least 9 of the 12 account digits, match one of them. Such a
 document is never better than STRONG ("Check the name."). Otherwise it is UNREADABLE.
 
 **5. The RIB on the check**, against that person's RIBs only:
@@ -89,14 +89,16 @@ document is never better than STRONG ("Check the name."). Otherwise it is UNREAD
    digit always breaks the key, so the check really shows another RIB, however many digits it
    shares (every postal RIB starts with `00799999`)
 4. otherwise each row's pieces are laid on the RIB where they share the longest run of digits
-   (from the left, the right or the middle), and the reading gets a tier by how many digits
-   match, wherever they are:
-   - **STRONG**: 11 to 19
-   - **PARTIAL**: 6 to 10
+   (from the left, the right or the middle), and the reading gets a tier by how many of the
+   **12 account digits** (account number and key, digits 9 to 20) match, wherever they are.
+   The bank and agency code in front (digits 1 to 8) is shared by every customer of the branch
+   (every postal RIB starts with `00799999`), so it never counts:
+   - **STRONG**: 8 to 12
+   - **PARTIAL**: 6 or 7
    - **WEAK**: 4 or 5
 
    all three are flagged for a manual check
-5. **MISMATCH**: otherwise, a clean 20-digit number was read and fewer than 4 of its digits match
+5. **MISMATCH**: otherwise, a clean 20-digit number was read and fewer than 4 of its account digits match
 6. **UNREADABLE**: otherwise; whatever digits were read are shown for a manual check
 
 A check that is not a full MATCH is read once more at 200 DPI (instead of 150) and both readings
@@ -136,10 +138,10 @@ e.g. "Digits: 13 right, 0 misplaced, 0 wrong, 7 not read".
 ## Results
 
 - **green (MATCH)**: all 20 digits of one of that person's RIBs
-- **blue (STRONG)**: 11 to 19 digits match, or the person was found only through the check
-- **yellow (PARTIAL)**: 6 to 10 digits match
+- **blue (STRONG)**: 8 to 12 of the 12 account digits match, or the person was found only through the check
+- **yellow (PARTIAL)**: 6 or 7 account digits match
 - **red**, needs action:
-  - **WEAK**: 4 or 5 digits match
+  - **WEAK**: 4 or 5 account digits match
   - **MISMATCH**: a clean 20-digit RIB on the check that is not the person's
   - **DUPLICATE**: same name and case number as an earlier document
   - **NO CHECK**: a QUITTANCE without its check page
