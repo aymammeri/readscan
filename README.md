@@ -23,7 +23,10 @@ cargo build --release
 ./target/release/readscan
 Spreadsheet path: clients.xlsx
 Scanned PDF path: scans.pdf
+Output folder (Enter: next to the spreadsheet): results
 ```
+
+The output folder is created if it doesn't exist; pressing Enter uses the spreadsheet's folder.
 
 Pages are paired in order: (1,2), (3,4), ... Both sides of a document are OCR'd at once,
 and many documents are processed concurrently on every logical CPU of the machine
@@ -134,15 +137,15 @@ e.g. "Digits: 13 right, 0 misplaced, 0 wrong, 7 not read".
 - **orange (PAGE ORDER)**: a page that fits no document
 - **grey (NOT IN PDF)**: spreadsheet row with no document in the PDF
 
-Results go to a new file next to the spreadsheet, `<name>_results.xlsx`; the spreadsheet itself
+Results go to a new file in the output folder, `<name>_results.xlsx`; the spreadsheet itself
 is never changed. A re-run replaces that file (if it is open in Excel, a time-stamped copy is
 written instead).
 
-- `Results` sheet, in PDF page order: `Pages`, `Case number`, `Result`, `Scan details`,
-  `Scan RIB read`, `RIB`, `Full name`, each line colored by its result
-- `Summary` sheet: run info, totals per result, page issues, digit colors
+1. `Summary` sheet (opens first): run info, totals per result, page issues, digit colors
+2. `Results` sheet, in PDF page order: `Pages`, `Case number`, `Result`, `Scan details`,
+   `Scan RIB read`, `RIB`, `Full name`, each line colored by its result
 
-A copy of the PDF, `<name>_checked.pdf`, is written next to it. Every document that is not a
+A copy of the PDF, `<name>_checked.pdf`, is written in the same folder. Every document that is not a
 full MATCH, or has no case number, gets a banner above its check page (or its QUITTANCE when the check is missing), in
 the result's color, in text sized to fill the page width: the result and what to do, the case
 number, the name and row, the spreadsheet RIB, the digits read on the check right below it, and

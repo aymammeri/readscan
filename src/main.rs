@@ -73,6 +73,10 @@ fn run(threads: usize) -> Result<()> {
     );
 
     let pdf_path = prompt("Scanned PDF path: ", &["pdf"])?;
+    let out_dir = prompt_folder(
+        "Output folder (Enter: next to the spreadsheet): ",
+        &sheet_path,
+    )?;
     let scanner = Scanner::new(engine, &pdf_path)?;
     let page_count = scanner.page_count();
     scan::ensure_pairs(page_count)?;
@@ -129,6 +133,7 @@ fn run(threads: usize) -> Result<()> {
     let info = RunInfo {
         sheet_path: &sheet_path,
         pdf_path: &pdf_path,
+        out_dir: &out_dir,
         page_count,
         threads,
         seconds,
@@ -142,7 +147,7 @@ fn run(threads: usize) -> Result<()> {
     if let Some(note) = saved.note {
         println!("  {note}");
     }
-    match annotate::write_checked_pdf(&pdf_path, &annotate::notes(&dir, &results)) {
+    match annotate::write_checked_pdf(&pdf_path, &out_dir, &annotate::notes(&dir, &results)) {
         Ok(Some(path)) => println!(
             "{} Pages to check, with the spreadsheet RIB on top: {}",
             "i".cyan().bold(),
@@ -197,24 +202,55 @@ impl Progress {
 /// or drag-and-dropped with escaped spaces (macOS / Linux terminals).
 fn prompt(question: &str, extensions: &[&str]) -> Result<PathBuf> {
     loop {
-        print!("{question}");
-        io::stdout().flush()?;
-        let mut line = String::new();
-        if io::stdin().lock().read_line(&mut line)? == 0 {
-            anyhow::bail!("no input");
-        }
-        let cleaned = line.trim().trim_matches(['"', '\'']);
-        // On Windows a backslash is the path separator, never an escape.
-        let path = if cfg!(windows) {
-            PathBuf::from(cleaned)
-        } else {
-            PathBuf::from(cleaned.replace("\\ ", " "))
-        };
+        let path = read_path(question)?;
         match check_file(&path, extensions) {
             Ok(()) => return Ok(path),
             Err(reason) => eprintln!("{} {reason}", "!".yellow().bold()),
         }
     }
+}
+
+/// Ask for the folder results are saved in, created if missing. Empty: the spreadsheet's folder.
+fn prompt_folder(question: &str, sheet_path: &Path) -> Result<PathBuf> {
+    loop {
+        let path = read_path(question)?;
+        if path.as_os_str().is_empty() {
+            let folder = sheet_path.parent().unwrap_or(Path::new("."));
+            return Ok(if folder.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                folder.to_path_buf()
+            });
+        }
+        if path.is_file() {
+            eprintln!("{} This is a file. Give a folder.", "!".yellow().bold());
+            continue;
+        }
+        match std::fs::create_dir_all(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                eprintln!("{} {PERMISSION_HINT}", "!".yellow().bold())
+            }
+            Err(e) => eprintln!("{} Cannot use this folder: {e}", "!".yellow().bold()),
+        }
+    }
+}
+
+/// One line of input as a path, without surrounding quotes or escaped spaces.
+fn read_path(question: &str) -> Result<PathBuf> {
+    print!("{question}");
+    io::stdout().flush()?;
+    let mut line = String::new();
+    if io::stdin().lock().read_line(&mut line)? == 0 {
+        anyhow::bail!("no input");
+    }
+    let cleaned = line.trim().trim_matches(['"', '\'']);
+    // On Windows a backslash is the path separator, never an escape.
+    Ok(if cfg!(windows) {
+        PathBuf::from(cleaned)
+    } else {
+        PathBuf::from(cleaned.replace("\\ ", " "))
+    })
 }
 
 #[cfg(target_os = "macos")]

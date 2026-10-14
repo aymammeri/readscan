@@ -24,6 +24,8 @@ const SUMMARY_SHEET: &str = "Summary";
 pub struct RunInfo<'a> {
     pub sheet_path: &'a Path,
     pub pdf_path: &'a Path,
+    /// Folder the results are saved in.
+    pub out_dir: &'a Path,
     pub page_count: usize,
     pub threads: usize,
     pub seconds: f32,
@@ -34,29 +36,29 @@ pub struct Saved {
     pub note: Option<String>,
 }
 
-/// Write the results, in PDF page order, and a summary to a new `<name>_results.xlsx` next to
-/// the spreadsheet. The spreadsheet itself is never changed.
+/// Write a summary (first sheet) and the results in PDF page order (second sheet) to a new
+/// `<name>_results.xlsx` in the output folder. The spreadsheet itself is never changed.
 pub fn write_results(rows: &[ResultRow], docs: &[DocResult], info: &RunInfo) -> Result<Saved> {
     let mut book = umya_spreadsheet::new_file();
     {
         let sheet = book.sheet_mut(0).map_err(|e| anyhow!("{e:?}"))?;
-        sheet.set_name(RESULTS_SHEET);
-        write_rows(sheet, rows);
+        sheet.set_name(SUMMARY_SHEET);
+        write_summary(sheet, rows, docs, info);
     }
-    let summary = book
-        .new_sheet(SUMMARY_SHEET)
-        .map_err(|e| anyhow!("cannot add sheet {SUMMARY_SHEET}: {e:?}"))?;
-    write_summary(summary, rows, docs, info);
+    let results = book
+        .new_sheet(RESULTS_SHEET)
+        .map_err(|e| anyhow!("cannot add sheet {RESULTS_SHEET}: {e:?}"))?;
+    write_rows(results, rows);
     book.set_active_sheet(0);
     let bytes = to_bytes(&book)?;
 
-    let path = sibling(info.sheet_path, "_results");
+    let path = output_path(info, "_results");
     match std::fs::write(&path, &bytes) {
         Ok(()) => Ok(Saved { path, note: None }),
         Err(e) => {
             // Usually the previous results file is still open in Excel.
             let stamp = chrono::Local::now().format("_results_%H%M%S");
-            let other = sibling(info.sheet_path, &stamp.to_string());
+            let other = output_path(info, &stamp.to_string());
             std::fs::write(&other, &bytes).context("cannot write results file")?;
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             Ok(Saved {
@@ -179,6 +181,7 @@ fn write_summary(sheet: &mut Worksheet, rows: &[ResultRow], docs: &[DocResult], 
     };
     out.row(&["Spreadsheet", &file_name(info.sheet_path)]);
     out.row(&["PDF", &file_name(info.pdf_path)]);
+    out.row(&["Output folder", &info.out_dir.display().to_string()]);
     out.row(&[
         "Date",
         &chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
@@ -301,8 +304,12 @@ fn to_bytes(book: &Workbook) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// `dir/name.xlsx` -> `dir/name{suffix}.xlsx`
-fn sibling(path: &Path, suffix: &str) -> PathBuf {
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!("{stem}{suffix}.xlsx"))
+/// `<output folder>/<spreadsheet name>{suffix}.xlsx`
+fn output_path(info: &RunInfo, suffix: &str) -> PathBuf {
+    let stem = info
+        .sheet_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    info.out_dir.join(format!("{stem}{suffix}.xlsx"))
 }

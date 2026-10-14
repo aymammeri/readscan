@@ -97,8 +97,12 @@ fn note_lines(dir: &Directory, d: &DocResult) -> Vec<String> {
     lines
 }
 
-/// Write `<name>_checked.pdf` next to the PDF. None when no page needs a check.
-pub fn write_checked_pdf(pdf_path: &Path, notes: &[Note]) -> Result<Option<PathBuf>> {
+/// Write `<name>_checked.pdf` in the output folder. None when no page needs a check.
+pub fn write_checked_pdf(
+    pdf_path: &Path,
+    out_dir: &Path,
+    notes: &[Note],
+) -> Result<Option<PathBuf>> {
     if notes.is_empty() {
         return Ok(None);
     }
@@ -117,7 +121,7 @@ pub fn write_checked_pdf(pdf_path: &Path, notes: &[Note]) -> Result<Option<PathB
         add_banner(&mut doc, page, font, note)?;
     }
     let stem = pdf_path.file_stem().unwrap_or_default().to_string_lossy();
-    let out = pdf_path.with_file_name(format!("{stem}_checked.pdf"));
+    let out = out_dir.join(format!("{stem}_checked.pdf"));
     doc.save(&out)
         .map_err(|e| anyhow!("cannot write {}: {e}", out.display()))?;
     Ok(Some(out))
