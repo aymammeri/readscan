@@ -160,8 +160,9 @@ written instead).
 2. `Results` sheet, in PDF page order: `Pages`, `Result`, `Scan details`, `Scan RIB read`,
    `RIB`, `Full name`, `Case number`, each line colored by its result
 
-A copy of the PDF, `<name>_checked.pdf`, is written in the same folder. Every document that is not a
-full MATCH, or has no case number, gets a banner above its check page (or its QUITTANCE when the check is missing), in
+`<name>_checked.pdf`, written in the same folder, holds only the documents that need a check:
+every document that is not a full MATCH, or has no case number, with both its pages, in PDF order.
+Each gets a banner above its check page (or its QUITTANCE when the check is missing), in
 the result's color, in text sized to fill the page width: the result and what to do, the case
 number, the name and row, the spreadsheet RIB, the digits read on the check right below it, and
 `^` under each digit that differs. The page is made taller

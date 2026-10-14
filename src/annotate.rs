@@ -1,7 +1,9 @@
-//! A copy of the scanned PDF where every page that needs a manual check gets a banner on top
+//! The pages of the scanned PDF that need a manual check, each document with a banner on top
 //! with the result and the spreadsheet RIB, lined up with what was read on the check. The page
-//! is made taller for the banner, so nothing on the scan is covered.
+//! is made taller for the banner, so nothing on the scan is covered. Documents that need no
+//! check are left out.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
@@ -29,6 +31,8 @@ const LABEL_WIDTH: usize = 17;
 pub struct Note {
     /// 0-based page.
     page: usize,
+    /// Every page (0-based) of the document, kept in the checked PDF.
+    keep: Vec<usize>,
     status: Status,
     lines: Vec<String>,
 }
@@ -40,6 +44,7 @@ pub fn notes(dir: &Directory, docs: &[DocResult]) -> Vec<Note> {
         .filter(|d| d.status != Status::Match || d.case.is_none())
         .map(|d| Note {
             page: d.page,
+            keep: d.page_ids.clone(),
             status: d.status,
             lines: note_lines(dir, d),
         })
@@ -97,7 +102,8 @@ fn note_lines(dir: &Directory, d: &DocResult) -> Vec<String> {
     lines
 }
 
-/// Write `<name>_checked.pdf` in the output folder. None when no page needs a check.
+/// Write `<name>_checked.pdf` in the output folder with only the pages of the noted documents.
+/// None when no page needs a check.
 pub fn write_checked_pdf(
     pdf_path: &Path,
     out_dir: &Path,
@@ -120,6 +126,17 @@ pub fn write_checked_pdf(
             .ok_or_else(|| anyhow!("page {} not in pdf", note.page + 1))?;
         add_banner(&mut doc, page, font, note)?;
     }
+    let keep: HashSet<usize> = notes
+        .iter()
+        .flat_map(|n| n.keep.iter().copied().chain([n.page]))
+        .collect();
+    let others: Vec<u32> = pages
+        .keys()
+        .copied()
+        .filter(|&number| !keep.contains(&(number as usize - 1)))
+        .collect();
+    doc.delete_pages(&others);
+    doc.prune_objects();
     let stem = pdf_path.file_stem().unwrap_or_default().to_string_lossy();
     let out = out_dir.join(format!("{stem}_checked.pdf"));
     doc.save(&out)

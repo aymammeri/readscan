@@ -167,6 +167,8 @@ pub struct DocResult {
     pub case: Option<String>,
     /// Page (0-based) where the RIB to check is: the check, else the QUITTANCE.
     pub page: usize,
+    /// Every page (0-based) of the document, in PDF order.
+    pub page_ids: Vec<usize>,
 }
 
 impl DocResult {
@@ -183,6 +185,7 @@ impl DocResult {
             rotation: None,
             case: None,
             page: 0,
+            page_ids: Vec::new(),
         }
     }
 }

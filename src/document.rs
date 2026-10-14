@@ -40,6 +40,11 @@ pub fn process_document(
 ) -> DocResult {
     let mut result = check_document(dir, scanner, name_page, check_page, texts);
     result.page = check_page.unwrap_or(name_page);
+    result.page_ids = [Some(name_page), check_page]
+        .into_iter()
+        .flatten()
+        .collect();
+    result.page_ids.sort_unstable();
     if result.case.is_none() {
         result.case = texts[name_page]
             .as_ref()
@@ -430,6 +435,8 @@ fn identify_by_rib(dir: &Directory, persons: Option<&[usize]>, check_text: &str)
 pub fn process_stray(dir: &Directory, page: usize, text: &Result<PageText>) -> DocResult {
     let issue = crate::pairing::describe_stray(page);
     let mut result = DocResult::new(page_range(page, None));
+    result.page = page;
+    result.page_ids = vec![page];
     result.status = Status::Order;
     result.order_issue = Some(issue.clone());
     let Ok(text) = text_of(text) else {
