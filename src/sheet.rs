@@ -26,30 +26,16 @@ pub struct Person {
     pub entry_ids: Vec<usize>,
 }
 
-/// Where the data sits in the first sheet, so results can be written back next to it.
-pub struct Layout {
-    /// Every cell of the used range, as text.
-    pub rows: Vec<Vec<String>>,
-    /// 1-based sheet row / column of `rows[0][0]`.
-    pub first_row: u32,
-    pub first_col: u32,
-    /// 1-based sheet row of the header, if the sheet has one.
-    pub header_row: Option<u32>,
-    /// 1-based sheet column holding the RIB.
-    pub rib_col: u32,
-}
-
 pub struct Directory {
     pub entries: Vec<Entry>,
     pub persons: Vec<Person>,
-    pub layout: Layout,
     entry_person: Vec<usize>,
     /// Every run of `rib::INDEX_RUN` digits of every RIB, to the entries holding it.
     rib_runs: HashMap<String, Vec<usize>>,
 }
 
 impl Directory {
-    pub fn new(entries: Vec<Entry>, layout: Layout) -> Self {
+    pub fn new(entries: Vec<Entry>) -> Self {
         let mut by_key: HashMap<String, usize> = HashMap::new();
         let mut persons: Vec<Person> = Vec::new();
         let mut entry_person = Vec::with_capacity(entries.len());
@@ -79,7 +65,6 @@ impl Directory {
             rib_runs,
             entries,
             persons,
-            layout,
             entry_person,
         }
     }
@@ -99,7 +84,7 @@ impl Directory {
 }
 
 pub fn load(path: &Path) -> Result<Directory> {
-    let (rows, (first_row, first_col)) = read_rows(path)?;
+    let (rows, (first_row, _)) = read_rows(path)?;
     let Some(header) = rows.first() else {
         bail!("spreadsheet is empty");
     };
@@ -158,14 +143,7 @@ pub fn load(path: &Path) -> Result<Directory> {
     if entries.is_empty() {
         bail!("no rows with both a full name and a RIB were found");
     }
-    let layout = Layout {
-        rows,
-        first_row,
-        first_col,
-        header_row: (skip == 1).then_some(first_row),
-        rib_col: first_col + rib_col as u32,
-    };
-    Ok(Directory::new(entries, layout))
+    Ok(Directory::new(entries))
 }
 
 /// Used cells as text, and the 1-based (row, column) of the top-left one.

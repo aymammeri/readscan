@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::matcher::{self, NameMatch};
 use crate::pairing::Issue;
 use crate::report::{DocResult, Status};
-use crate::rib::{self, RibMatch};
+use crate::rib::{self, RibMatch, Tier};
 use crate::scan::{PageText, Scanner, Turn};
 use crate::sheet::Directory;
 use crate::text::normalize_name;
@@ -116,7 +116,7 @@ pub fn process_document(
         return best;
     }
     let evidence = evidence.join(" ");
-    let matched = matches!(best.status, Status::Green | Status::Partial);
+    let matched = best.status.is_match();
     if matched && !turned.is_empty() {
         let message = format!("{evidence} Read turned. Rescan it.");
         best.detail = format!("{} {message}", best.detail);
@@ -139,12 +139,12 @@ fn clearly_better(dir: &Directory, turned: &DocResult, current: &DocResult) -> b
     let digits = |r: &DocResult| matched_digits(dir, r);
     let trusted = match turned.status {
         Status::Green => true,
-        Status::Partial => digits(turned) >= TURN_MIN_DIGITS,
+        s if s.is_tier() => digits(turned) >= TURN_MIN_DIGITS,
         _ => turned.person.is_some() && current.person.is_none(),
     };
     (turned.status > current.status && trusted)
         || (turned.status == current.status
-            && turned.status == Status::Partial
+            && turned.status.is_tier()
             && digits(turned) >= digits(current) + TURN_MIN_DIGITS / 2)
 }
 
@@ -208,7 +208,7 @@ fn is_readable(text: &str) -> bool {
 /// 1. The name on the name page is looked up in the spreadsheet. If the page is unreadable,
 ///    or its name matches several people or none, the check's RIB is used to tell who it is
 ///    (all 20 digits, or at least `IDENTIFY_MIN_DIGITS`); such a document is never better
-///    than PARTIAL MATCH.
+///    than STRONG.
 /// 2. The check page must be readable.
 /// 3. The check's RIB is compared with that person's RIBs only (see `rib::check`).
 ///
@@ -282,9 +282,7 @@ fn evaluate(
     result.apply_rib(dir, found, c);
 
     if let Some(note) = name_note {
-        if result.status == Status::Green {
-            result.status = Status::Partial;
-        }
+        result.status = result.status.min(Status::Strong);
         result.detail = format!("{note} Found by RIB: {} Check the name.", result.detail);
     }
     (result, name_ok)
@@ -320,9 +318,9 @@ fn identify_by_rib(dir: &Directory, persons: Option<&[usize]>, check_text: &str)
     };
     match rib::check(dir, &entries, check_text).outcome {
         RibMatch::Full { entry, .. } => Some(dir.person_of(entry)),
-        RibMatch::Partial { entry, matched } if matched >= IDENTIFY_MIN_DIGITS => {
-            Some(dir.person_of(entry))
-        }
+        RibMatch::Partial {
+            entry, agreement, ..
+        } if agreement.matched >= IDENTIFY_MIN_DIGITS => Some(dir.person_of(entry)),
         _ => None,
     }
 }
@@ -347,7 +345,9 @@ pub fn process_stray(dir: &Directory, page: usize, text: &Result<PageText>) -> D
             result.rib_read = e.rib.clone();
             format!("Check of {}, row {}.", e.full_name, e.row)
         }
-        RibMatch::Partial { entry, matched } if matched >= IDENTIFY_MIN_DIGITS => {
+        RibMatch::Partial {
+            entry, agreement, ..
+        } if agreement.matched >= IDENTIFY_MIN_DIGITS => {
             let e = &dir.entries[entry];
             result.person = Some(dir.person_of(entry));
             format!("Likely check of {}, row {}.", e.full_name, e.row)
@@ -379,14 +379,20 @@ impl DocResult {
                     "RIB OK.".to_string()
                 };
             }
-            RibMatch::Partial { entry, matched } => {
+            RibMatch::Partial {
+                entry,
+                tier,
+                agreement: a,
+            } => {
                 self.matched_entry = Some(entry);
-                self.status = Status::Partial;
+                self.status = Status::from_tier(tier);
                 self.rib_read = dir.entries[entry].rib.clone();
-                self.detail = format!(
-                    "{matched}/{} RIB digits match. Check the RIB by hand.",
-                    rib::RIB_LEN
-                );
+                let what = match tier {
+                    Tier::Strong if a.first >= a.last => format!("First {} RIB digits", a.first),
+                    Tier::Strong | Tier::Partial => format!("Last {} RIB digits", a.last),
+                    Tier::Weak => format!("Only {}/{} RIB digits", a.matched, rib::RIB_LEN),
+                };
+                self.detail = format!("{what} match. Check the RIB by hand.");
             }
             RibMatch::Mismatch { read, .. } => {
                 self.status = Status::Red;

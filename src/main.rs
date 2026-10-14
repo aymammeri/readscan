@@ -120,9 +120,8 @@ fn run(threads: usize) -> Result<()> {
 
     let seconds = started.elapsed().as_secs_f32();
     println!("\nFinished in {seconds:.1}s.\n");
-    let reports = report::entry_reports(&dir, &results);
-    report::print_documents(&dir, &results);
-    report::print_entries(&dir, &reports);
+    let rows = report::result_rows(&dir, &results);
+    report::print_results(&rows, &results);
 
     let info = RunInfo {
         sheet_path: &sheet_path,
@@ -131,15 +130,12 @@ fn run(threads: usize) -> Result<()> {
         threads,
         seconds,
     };
-    let saved = export::write_results(&dir, &results, &reports, &info)?;
+    let saved = export::write_results(&rows, &results, &info)?;
     println!(
         "\n{} Results saved to {}",
         "i".cyan().bold(),
         saved.path.display()
     );
-    if let Some(backup) = saved.backup {
-        println!("  Previous version saved as {}", backup.display());
-    }
     if let Some(note) = saved.note {
         println!("  {note}");
     }

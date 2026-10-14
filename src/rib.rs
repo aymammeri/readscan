@@ -10,8 +10,56 @@ use std::collections::HashMap;
 use crate::sheet::Directory;
 
 pub const RIB_LEN: usize = 20;
-/// Fewest agreeing digits, from the left, the right or both, for a PARTIAL MATCH.
-const PARTIAL_MIN_DIGITS: usize = 4;
+/// WEAK: at least this many digits match, at any position.
+const WEAK_MIN_DIGITS: usize = 4;
+/// PARTIAL: at least this many last digits match, in a row from the end.
+const PARTIAL_MIN_LAST: usize = 7;
+/// STRONG: at least this many first or last digits match, in a row from that end.
+const STRONG_MIN_END: usize = 11;
+
+/// How much of a RIB was confirmed when not all 20 digits were.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Tier {
+    Weak,
+    Partial,
+    Strong,
+}
+
+/// Digits of `aligned` matching `rib`: anywhere, in a row from the start, in a row from the end.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Agreement {
+    pub matched: usize,
+    pub first: usize,
+    pub last: usize,
+}
+
+impl Agreement {
+    fn of(rib: &str, aligned: &str) -> Self {
+        let same: Vec<bool> = rib
+            .bytes()
+            .zip(aligned.bytes())
+            .map(|(a, b)| a == b)
+            .collect();
+        Self {
+            matched: same.iter().filter(|s| **s).count(),
+            first: same.iter().take_while(|s| **s).count(),
+            last: same.iter().rev().take_while(|s| **s).count(),
+        }
+    }
+
+    /// Highest tier reached, checked from the strongest down.
+    pub fn tier(self) -> Option<Tier> {
+        if self.first >= STRONG_MIN_END || self.last >= STRONG_MIN_END {
+            Some(Tier::Strong)
+        } else if self.last >= PARTIAL_MIN_LAST {
+            Some(Tier::Partial)
+        } else if self.matched >= WEAK_MIN_DIGITS {
+            Some(Tier::Weak)
+        } else {
+            None
+        }
+    }
+}
 /// Digits per run in the RIB index used to search the whole spreadsheet.
 pub const INDEX_RUN: usize = 5;
 /// Most entries compared in full when searching the whole spreadsheet.
@@ -125,10 +173,11 @@ pub enum RibMatch {
         entry: usize,
         joined: bool,
     },
-    /// At least `PARTIAL_MIN_DIGITS` digits match, wherever they are.
+    /// Not all 20 digits, but enough for a tier.
     Partial {
         entry: usize,
-        matched: usize,
+        tier: Tier,
+        agreement: Agreement,
     },
     /// A clean 20-digit number was read and almost none of it matches.
     Mismatch {
@@ -194,8 +243,9 @@ pub fn score(expected: &str, aligned: &str) -> Vec<Mark> {
 /// 1. Each row is cut into digit pieces (see [`chunks`]).
 /// 2. MATCH: all 20 digits of a RIB, in one piece, in the pieces of a row joined, or over two
 ///    consecutive rows joined.
-/// 3. PARTIAL MATCH: otherwise each row's pieces are laid on each RIB where they share the
-///    longest run of digits; 4 or more matching digits, at any position, is a partial match.
+/// 3. Otherwise each row's pieces are laid on each RIB where they share the longest run of
+///    digits, and the best reading gets the highest tier it reaches:
+///    STRONG 11+ first or last digits, PARTIAL 7+ last digits, WEAK 4+ digits anywhere.
 /// 4. MISMATCH: otherwise, a clean 20-digit number was read and it is not the RIB.
 /// 5. UNREADABLE: otherwise; whatever digits were read are listed for a manual check.
 pub fn check(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibCheck {
@@ -215,13 +265,14 @@ pub fn check(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibCheck {
     }
 
     let best = best_reading(&rows, &ribs);
-    if let Some((reading, matched)) = &best
-        && *matched >= PARTIAL_MIN_DIGITS
+    if let Some((reading, agreement)) = &best
+        && let Some(tier) = agreement.tier()
     {
         return RibCheck {
             outcome: RibMatch::Partial {
                 entry: reading.entry,
-                matched: *matched,
+                tier,
+                agreement: *agreement,
             },
             reading: best.map(|(reading, _)| reading),
         };
@@ -282,30 +333,24 @@ fn full_match(rows: &[Vec<String>], ribs: &[(usize, &str)]) -> Option<(usize, bo
     })
 }
 
-/// The row reading that matches an expected RIB on the most digits, with that count.
-fn best_reading(rows: &[Vec<String>], ribs: &[(usize, &str)]) -> Option<(Reading, usize)> {
+/// The row reading with the highest tier against an expected RIB, then the most digits.
+fn best_reading(rows: &[Vec<String>], ribs: &[(usize, &str)]) -> Option<(Reading, Agreement)> {
+    let rank = |a: &Agreement| (a.tier(), a.matched, a.first.max(a.last));
     ribs.iter()
         .flat_map(|&(entry, rib)| {
             rows.iter().filter(|row| !row.is_empty()).map(move |row| {
                 let aligned = align_row(row, rib);
-                let matched = matching_digits(rib, &aligned);
-                (Reading { entry, aligned }, matched)
+                let agreement = Agreement::of(rib, &aligned);
+                (Reading { entry, aligned }, agreement)
             })
         })
         .fold(
             None,
-            |best: Option<(Reading, usize)>, candidate| match best {
-                Some(b) if b.1 >= candidate.1 => Some(b),
+            |best: Option<(Reading, Agreement)>, candidate| match best {
+                Some(b) if rank(&b.1) >= rank(&candidate.1) => Some(b),
                 _ => Some(candidate),
             },
         )
-}
-
-fn matching_digits(rib: &str, aligned: &str) -> usize {
-    rib.bytes()
-        .zip(aligned.bytes())
-        .filter(|(a, b)| a == b)
-        .count()
 }
 
 /// Lay a row's digit pieces over the 20 positions of `rib`. Each piece goes where it shares
@@ -381,7 +426,7 @@ fn closest(read: &str, ribs: &[(usize, &str)]) -> (usize, Vec<usize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sheet::{Entry, Layout};
+    use crate::sheet::Entry;
 
     const RIB_A: &str = "00100123012345678912";
     const RIB_B: &str = "01400456098765432155";
@@ -393,14 +438,7 @@ mod tests {
             rib: rib.to_string(),
             rib_digits: from_sheet(rib),
         };
-        let layout = Layout {
-            rows: Vec::new(),
-            first_row: 1,
-            first_col: 1,
-            header_row: Some(1),
-            rib_col: 2,
-        };
-        Directory::new(vec![entry(2, RIB_A), entry(3, RIB_B)], layout)
+        Directory::new(vec![entry(2, RIB_A), entry(3, RIB_B)])
     }
 
     fn check_text(text: &str) -> RibMatch {
@@ -494,9 +532,36 @@ mod tests {
 
     fn matched(text: &str) -> Option<(usize, usize)> {
         match check_text(text) {
-            RibMatch::Partial { entry, matched } => Some((entry, matched)),
+            RibMatch::Partial {
+                entry, agreement, ..
+            } => Some((entry, agreement.matched)),
             _ => None,
         }
+    }
+
+    fn tier(text: &str) -> Option<Tier> {
+        match check_text(text) {
+            RibMatch::Partial { tier, .. } => Some(tier),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn tiers_from_strongest_down() {
+        // RIB_A = 00100123012345678912
+        assert_eq!(tier("00100123012 ##"), Some(Tier::Strong), "first 11");
+        assert_eq!(tier("## 12345678912"), Some(Tier::Strong), "last 11");
+        assert_eq!(tier("## 5678912"), Some(Tier::Partial), "last 7");
+        assert_eq!(tier("0010012301 ##"), Some(Tier::Weak), "first 10 only");
+        assert_eq!(tier("## 678912"), Some(Tier::Weak), "last 6 only");
+        assert_eq!(tier("## 3456 ##"), Some(Tier::Weak), "4 in the middle");
+        assert_eq!(tier("RIB 0014 ###"), None, "3 digits");
+    }
+
+    #[test]
+    fn agreement_counts_both_ends() {
+        let a = Agreement::of(RIB_A, "0010012301234500?912");
+        assert_eq!((a.matched, a.first, a.last), (17, 14, 3));
     }
 
     #[test]

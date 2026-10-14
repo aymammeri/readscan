@@ -1,23 +1,22 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use umya_spreadsheet::{RichText, TextElement, Workbook, Worksheet, reader, writer};
+use umya_spreadsheet::{RichText, TextElement, Workbook, Worksheet, writer};
 
-use crate::report::{DocResult, EntryReport, Status, count, describe_marks, page_issues};
-use crate::rib::{self, Mark};
-use crate::sheet::{Directory, Layout};
+use crate::report::{DocResult, ResultRow, Status, count, describe_marks, page_issues};
+use crate::rib::Mark;
 
-/// Columns appended to the first sheet: header and width. Found again by header on re-runs.
-const RESULT_COLUMNS: [(&str, f64); 4] = [
-    ("Scan result", 14.0),
-    ("Scan pages", 12.0),
-    ("Scan RIB read", 28.0),
+/// Results sheet columns: header and width.
+const RESULT_COLUMNS: [(&str, f64); 6] = [
+    ("Pages", 9.0),
+    ("Result", 12.0),
     ("Scan details", 70.0),
+    ("Scan RIB read", 24.0),
+    ("RIB", 28.0),
+    ("Full name", 28.0),
 ];
-const SUMMARY_SHEET: &str = "Scan summary";
-const DOCUMENTS_SHEET: &str = "Scan documents";
-/// Above this many digits a number is a RIB, not an amount, and must stay text.
-const MAX_NUMERIC_DIGITS: usize = 15;
+const RESULTS_SHEET: &str = "Results";
+const SUMMARY_SHEET: &str = "Summary";
 
 pub struct RunInfo<'a> {
     pub sheet_path: &'a Path,
@@ -29,135 +28,82 @@ pub struct RunInfo<'a> {
 
 pub struct Saved {
     pub path: PathBuf,
-    pub backup: Option<PathBuf>,
     pub note: Option<String>,
 }
 
-/// Write per-row results, a summary sheet and a documents sheet into the input workbook.
-/// `.xlsx` files are updated in place after a backup copy; other formats get a new `_results.xlsx`.
-pub fn write_results(
-    dir: &Directory,
-    docs: &[DocResult],
-    reports: &[EntryReport],
-    info: &RunInfo,
-) -> Result<Saved> {
-    let path = info.sheet_path;
-    let in_place = path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("xlsx"));
-    let results_copy = sibling(path, "_results");
-    let backup = sibling(path, ".backup");
-
-    let mut book = if in_place {
-        reader::xlsx::read(path).map_err(|e| anyhow!("cannot reopen spreadsheet: {e:?}"))?
-    } else {
-        copy_of(&dir.layout)
-    };
-
-    let data_sheet = {
+/// Write the results, in PDF page order, and a summary to a new `<name>_results.xlsx` next to
+/// the spreadsheet. The spreadsheet itself is never changed.
+pub fn write_results(rows: &[ResultRow], docs: &[DocResult], info: &RunInfo) -> Result<Saved> {
+    let mut book = umya_spreadsheet::new_file();
+    {
         let sheet = book.sheet_mut(0).map_err(|e| anyhow!("{e:?}"))?;
-        annotate_rows(sheet, dir, reports);
-        sheet.name().to_string()
-    };
-    let saved_as = if in_place { &backup } else { &results_copy };
-    let notes = notes(docs, reports, &data_sheet, in_place.then_some(saved_as));
-    write_summary(
-        new_sheet(&mut book, SUMMARY_SHEET)?,
-        docs,
-        reports,
-        info,
-        &notes,
-    );
-    write_documents(new_sheet(&mut book, DOCUMENTS_SHEET)?, dir, docs);
-    book.set_active_sheet(0);
-
-    let bytes = to_bytes(&book)?;
-    if !in_place {
-        std::fs::write(&results_copy, bytes).context("cannot write results file")?;
-        return Ok(Saved {
-            path: results_copy,
-            backup: None,
-            note: Some("This format can't be edited. Results saved as a new .xlsx file.".into()),
-        });
+        sheet.set_name(RESULTS_SHEET);
+        write_rows(sheet, rows);
     }
+    let summary = book
+        .new_sheet(SUMMARY_SHEET)
+        .map_err(|e| anyhow!("cannot add sheet {SUMMARY_SHEET}: {e:?}"))?;
+    write_summary(summary, rows, docs, info);
+    book.set_active_sheet(0);
+    let bytes = to_bytes(&book)?;
 
-    std::fs::copy(path, &backup).context("cannot create backup copy")?;
-    // Write next to the original then swap, so a failed write never leaves a half-written file.
-    let tmp = sibling(path, ".tmp");
-    let replaced = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, path));
-    match replaced {
-        Ok(()) => Ok(Saved {
-            path: path.to_path_buf(),
-            backup: Some(backup),
-            note: None,
-        }),
+    let path = sibling(info.sheet_path, "_results");
+    match std::fs::write(&path, &bytes) {
+        Ok(()) => Ok(Saved { path, note: None }),
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            std::fs::write(&results_copy, &bytes).context("cannot write results file")?;
+            // Usually the previous results file is still open in Excel.
+            let stamp = chrono::Local::now().format("_results_%H%M%S");
+            let other = sibling(info.sheet_path, &stamp.to_string());
+            std::fs::write(&other, &bytes).context("cannot write results file")?;
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
             Ok(Saved {
-                path: results_copy,
-                backup: None,
+                path: other,
                 note: Some(format!(
-                    "Spreadsheet not overwritten ({e}). Close it in Excel next time. Results saved to a new file."
+                    "{name} not replaced ({e}). Close it in Excel next time."
                 )),
             })
         }
     }
 }
 
-fn annotate_rows(sheet: &mut Worksheet, dir: &Directory, reports: &[EntryReport]) {
-    let layout = &dir.layout;
-    let data_width = layout.rows.iter().map(Vec::len).max().unwrap_or(0) as u32;
-    let last_data_col = layout.first_col + data_width.saturating_sub(1);
-
-    let existing = layout.header_row.and_then(|row| {
-        (1..=sheet.highest_column()).find(|&col| sheet.value((col, row)) == RESULT_COLUMNS[0].0)
-    });
-    let first = existing.unwrap_or(last_data_col.max(sheet.highest_column()) + 1);
-
-    for (i, (title, width)) in RESULT_COLUMNS.iter().enumerate() {
-        let col = first + i as u32;
-        sheet.column_dimension_by_number_mut(col).set_width(*width);
-        if let Some(row) = layout.header_row {
-            sheet.cell_mut((col, row)).set_value_string(*title);
-            sheet.style_mut((col, row)).font_mut().set_bold(true);
+fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
+    let mut out = SheetWriter::new(sheet);
+    let headers: Vec<&str> = RESULT_COLUMNS.iter().map(|(title, _)| *title).collect();
+    out.bold_row(&headers);
+    for r in rows {
+        let marks = r.marks();
+        let detail = match &marks {
+            Some(marks) if r.status != Status::Green => {
+                format!("{} Digits: {}.", r.detail, describe_marks(marks))
+            }
+            _ => r.detail.clone(),
+        };
+        let read = r.aligned.as_deref().unwrap_or(&r.read);
+        let row = out.row;
+        out.colored_row(
+            &[
+                &r.pages,
+                r.status.label(),
+                &detail,
+                read,
+                &r.rib,
+                &r.full_name,
+            ],
+            r.status,
+        );
+        if let (Some(aligned), Some(marks)) = (&r.aligned, &marks) {
+            out.sheet
+                .cell_mut((4, row))
+                .set_rich_text(marked(aligned, marks));
+            out.sheet
+                .cell_mut((5, row))
+                .set_rich_text(marked_in_place(&r.rib, marks));
         }
     }
-
-    let last = first + RESULT_COLUMNS.len() as u32 - 1;
-    for (entry, report) in dir.entries.iter().zip(reports) {
-        let marks = report
-            .aligned
-            .as_deref()
-            .map(|aligned| (aligned, rib::score(&entry.rib_digits, aligned)));
-        let detail = match &marks {
-            Some((_, marks)) => format!("{} Digits: {}.", report.detail, describe_marks(marks)),
-            None => report.detail.clone(),
-        };
-        let values = [
-            report.status.label(),
-            &report.pages,
-            &report.rib_read,
-            &detail,
-        ];
-        for (i, value) in values.iter().enumerate() {
-            sheet
-                .cell_mut((first + i as u32, entry.row))
-                .set_value_string(*value);
-        }
-        if let Some((aligned, marks)) = &marks {
-            sheet
-                .cell_mut((first + 2, entry.row))
-                .set_rich_text(marked(aligned, marks));
-            let rib_cell = sheet.cell_mut((layout.rib_col, entry.row));
-            let original = rib_cell.value().into_owned();
-            rib_cell.set_rich_text(marked_in_place(&original, marks));
-        }
-        for col in layout.first_col..=last {
-            sheet
-                .style_mut((col, entry.row))
-                .set_background_color(report.status.fill_argb());
-        }
+    for (col, (_, width)) in RESULT_COLUMNS.iter().enumerate() {
+        out.sheet
+            .column_dimension_by_number_mut(col as u32 + 1)
+            .set_width(*width);
     }
 }
 
@@ -214,13 +160,7 @@ fn marked_in_place(original: &str, marks: &[Mark]) -> RichText {
     text
 }
 
-fn write_summary(
-    sheet: &mut Worksheet,
-    docs: &[DocResult],
-    reports: &[EntryReport],
-    info: &RunInfo,
-    notes: &[String],
-) {
+fn write_summary(sheet: &mut Worksheet, rows: &[ResultRow], docs: &[DocResult], info: &RunInfo) {
     let mut out = SheetWriter::new(sheet);
     out.bold_row(&["Scan summary"]);
     out.skip();
@@ -240,29 +180,12 @@ fn write_summary(
     out.row(&["Duration", &format!("{:.1} s", info.seconds)]);
     out.skip();
 
-    out.bold_row(&["Spreadsheet rows", "Count", "Meaning"]);
+    out.bold_row(&["Result", "Count", "Meaning"]);
     for status in Status::ALL {
-        let n = count(reports, status, |r| r.status).to_string();
+        let n = count(rows, status, |r| r.status).to_string();
         out.colored_row(&[status.label(), &n, status.meaning()], status);
     }
-    out.bold_row(&["Total", &reports.len().to_string()]);
-    out.skip();
-
-    out.bold_row(&["Scanned documents", "Count"]);
-    for status in [
-        Status::Green,
-        Status::Partial,
-        Status::Red,
-        Status::Rotated,
-        Status::Order,
-        Status::Yellow,
-    ] {
-        let n = count(docs, status, |d| d.status).to_string();
-        out.colored_row(&[status.label(), &n], status);
-    }
-    let unknown = docs.iter().filter(|d| d.person.is_none()).count();
-    out.row(&["Name not found", &unknown.to_string()]);
-    out.bold_row(&["Total", &docs.len().to_string()]);
+    out.bold_row(&["Total", &rows.len().to_string()]);
     out.skip();
 
     let issues = page_issues(docs);
@@ -290,80 +213,15 @@ fn write_summary(
     }
     out.skip();
 
-    out.bold_row(&["Notes"]);
-    for note in notes {
-        out.row(&[note]);
+    let unknown = docs.iter().filter(|d| d.person.is_none()).count();
+    if unknown > 0 {
+        out.bold_row(&["Notes"]);
+        out.row(&[&format!(
+            "{unknown} document(s) match no name: \"(not found)\" in {RESULTS_SHEET}."
+        )]);
     }
 
     for (col, width) in [(1, 22.0), (2, 14.0), (3, 90.0)] {
-        out.sheet
-            .column_dimension_by_number_mut(col)
-            .set_width(width);
-    }
-}
-
-fn notes(
-    docs: &[DocResult],
-    reports: &[EntryReport],
-    data_sheet: &str,
-    backup: Option<&PathBuf>,
-) -> Vec<String> {
-    let mut notes = vec![format!(
-        "Results per row: sheet \"{data_sheet}\". All documents: sheet \"{DOCUMENTS_SHEET}\"."
-    )];
-    let rows = |status: Status| count(reports, status, |r| r.status);
-    for (status, message) in [
-        (Status::Partial, "blue: check the RIB by hand."),
-        (Status::Red, "red: wrong RIB. Verify check and spreadsheet."),
-        (Status::Rotated, "purple: page rotated. Rescan upright."),
-        (Status::Order, "orange: pages out of order. Fix and rescan."),
-        (Status::Yellow, "yellow: unreadable. Check by hand."),
-    ] {
-        let n = rows(status);
-        if n > 0 {
-            notes.push(format!("{n} row(s) {message}"));
-        }
-    }
-    let unknown = docs.iter().filter(|d| d.person.is_none()).count();
-    if unknown > 0 {
-        notes.push(format!(
-            "{unknown} document(s) match no name. See \"{DOCUMENTS_SHEET}\"."
-        ));
-    }
-    let issues = page_issues(docs).len();
-    if issues > 0 {
-        notes.push(format!(
-            "{issues} page issue(s). See \"Page issues\" above."
-        ));
-    }
-    if let Some(backup) = backup.and_then(|b| b.file_name()) {
-        notes.push(format!(
-            "Previous version saved as \"{}\".",
-            backup.to_string_lossy()
-        ));
-    }
-    notes
-}
-
-fn write_documents(sheet: &mut Worksheet, dir: &Directory, docs: &[DocResult]) {
-    let mut out = SheetWriter::new(sheet);
-    out.bold_row(&["Pages", "Name", "Result", "RIB read on check", "Details"]);
-    for d in docs {
-        let name = d.person.map_or("(not found)", |_| d.person_name(dir));
-        let row = out.row;
-        out.colored_row(
-            &[&d.pages, name, d.status.label(), &d.rib_read, &d.detail],
-            d.status,
-        );
-        if let Some(reading) = &d.reading {
-            let expected = &dir.entries[reading.entry].rib_digits;
-            let marks = rib::score(expected, &reading.aligned);
-            out.sheet
-                .cell_mut((4, row))
-                .set_rich_text(marked(&reading.aligned, &marks));
-        }
-    }
-    for (col, width) in [(1, 10.0), (2, 30.0), (3, 14.0), (4, 28.0), (5, 90.0)] {
         out.sheet
             .column_dimension_by_number_mut(col)
             .set_width(width);
@@ -412,33 +270,6 @@ impl<'a> SheetWriter<'a> {
     fn skip(&mut self) {
         self.row += 1;
     }
-}
-
-/// Start a fresh copy of `name`, dropping the one left by a previous run.
-fn new_sheet<'a>(book: &'a mut Workbook, name: &str) -> Result<&'a mut Worksheet> {
-    let _ = book.remove_sheet_by_name(name);
-    book.new_sheet(name)
-        .map_err(|e| anyhow!("cannot add sheet {name}: {e:?}"))
-}
-
-/// Rebuild the first sheet of a csv / xls / ods file as a new xlsx workbook.
-fn copy_of(layout: &Layout) -> Workbook {
-    let mut book = umya_spreadsheet::new_file();
-    let sheet = book.sheet_mut(0).expect("new workbook has a sheet");
-    for (r, row) in layout.rows.iter().enumerate() {
-        for (c, value) in row.iter().enumerate() {
-            if value.is_empty() {
-                continue;
-            }
-            let cell = sheet.cell_mut((layout.first_col + c as u32, layout.first_row + r as u32));
-            let digits = value.chars().filter(char::is_ascii_digit).count();
-            match value.parse::<f64>() {
-                Ok(n) if digits <= MAX_NUMERIC_DIGITS => cell.set_value_number(n),
-                _ => cell.set_value_string(value),
-            };
-        }
-    }
-    book
 }
 
 fn to_bytes(book: &Workbook) -> Result<Vec<u8>> {

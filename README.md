@@ -60,12 +60,12 @@ Pages pair as (1,2), (3,4), ... until a title page shows up where a check should
   (PAGE ORDER) and identified by its RIB when at least 15 digits match
 
 Pairing then resumes at the next title page. A name page whose title OCR misses never shifts the
-pairing. Every issue is listed with its pages in the terminal and on the `Scan summary` sheet.
+pairing. Every issue is listed with its pages in the terminal and on the `Summary` sheet.
 
 **4. Who the document is for.** The name page is looked up in the spreadsheet (accents, word order
 and small OCR typos tolerated). If the page is unreadable, or the name matches nobody or several
 people, the check's RIB decides when all 20 digits, or at least 15, match one of them. Such a
-document is never better than PARTIAL MATCH ("check the name manually"). Otherwise it is UNREADABLE.
+document is never better than STRONG ("Check the name."). Otherwise it is UNREADABLE.
 
 **5. The RIB on the check**, against that person's RIBs only:
 
@@ -73,9 +73,13 @@ document is never better than PARTIAL MATCH ("check the name manually"). Otherwi
    (`#`, `~`, `*`...) cut the number; a lone look-alike letter touching digits (`O`, `I`, `S`, `B`...)
    is read as a digit
 2. **MATCH**: all 20 digits found, in one piece, in a row's pieces joined, or over two rows joined
-3. **PARTIAL MATCH**: otherwise each row's pieces are laid on the RIB where they share the longest
-   run of digits (from the left, the right or the middle); **4 or more matching digits, at any
-   position**, is a partial match, flagged for a manual check
+3. otherwise each row's pieces are laid on the RIB where they share the longest run of digits
+   (from the left, the right or the middle), and the reading gets the highest tier it reaches:
+   - **STRONG**: 11 or more first digits, or 11 or more last digits, match in a row
+   - **PARTIAL**: 7 or more last digits match in a row
+   - **WEAK**: 4 or more digits match, at any position
+
+   all three are flagged for a manual check
 4. **MISMATCH**: otherwise, a clean 20-digit number was read and fewer than 4 of its digits match
 5. **UNREADABLE**: otherwise; whatever digits were read are shown for a manual check
 
@@ -91,11 +95,11 @@ A turn is kept only for a full match, a found name, or 10+ matching digits. Then
 and the page is flagged ("Page 2 upside down. Read turned. Rescan it."). If the document still
 fails on a rotated or tilted page, it is **ROTATED** ("Page 8 tilted 45°. Rescan it.").
 
-**7. Spreadsheet rows.** A row takes the best document that matched its RIB (MATCH over PARTIAL
-MATCH), and mentions it when several documents matched it (duplicate scan?). A row with no match
-takes the worst result among that person's other documents; with none it is NOT IN PDF.
+**7. Results order.** One line per document, in PDF page order. A document matching the same RIB
+as another is flagged as a duplicate. Spreadsheet rows that no document matched follow, as NOT IN
+PDF (a person whose other RIB was matched is told which pages show it).
 
-**8. Digits, bulls and cows.** The RIB cell, `Scan RIB read` and the terminal color every digit:
+**8. Digits, bulls and cows.** The `RIB` and `Scan RIB read` cells and the terminal color every digit:
 **green** right digit in the right place, **orange** a digit of the RIB read in another place,
 **red** a digit not in the RIB, **grey** not readable (`?`). `Scan details` ends with the counts,
 e.g. "Digits: 13 right, 0 misplaced, 0 wrong, 7 not read".
@@ -103,23 +107,22 @@ e.g. "Digits: 13 right, 0 misplaced, 0 wrong, 7 not read".
 ## Results
 
 - **green (MATCH)**: the check shows all 20 digits of one of that person's RIBs
-- **blue (PARTIAL MATCH)**: 4 or more digits match, or the person was found through the check; check manually
+- **light green (STRONG)**: 11+ first or last digits match, or the person was found through the check
+- **blue (PARTIAL)**: 7+ last digits match
+- **pink (WEAK)**: only 4+ digits match, anywhere
 - **red (MISMATCH)**: a clean 20-digit RIB on the check that is not the person's
 - **purple (ROTATED)**: a page is upside down, on its side or tilted; rescan it
 - **orange (PAGE ORDER)**: pages out of physical order, document incomplete
 - **yellow (UNREADABLE)**: page or RIB not readable, or name not found; check manually
 - **grey (NOT IN PDF)**: spreadsheet row with no document in the PDF
 
-Results are also written into the spreadsheet:
+Results go to a new file next to the spreadsheet, `<name>_results.xlsx`; the spreadsheet itself
+is never changed. A re-run replaces that file (if it is open in Excel, a time-stamped copy is
+written instead).
 
-- first sheet: every row colored, plus `Scan result`, `Scan pages`, `Scan RIB read`, `Scan details` columns
-- `Scan summary` sheet: run info, totals per color, notes
-- `Scan documents` sheet: every scanned document, including ones whose name matched no row
-
-`.xlsx` files are updated in place and the previous version is kept as `<name>.backup.xlsx`.
-`.csv`, `.xls`, `.ods`, `.xlsm` and `.xlsb` are left untouched and results go to a new `<name>_results.xlsx`.
-If the file can't be overwritten (e.g. open in Excel), results also go to `<name>_results.xlsx`.
-Re-running on the same file reuses the result columns and replaces the two scan sheets.
+- `Results` sheet, in PDF page order: `Pages`, `Result`, `Scan details`, `Scan RIB read`, `RIB`,
+  `Full name`, each line colored by its result
+- `Summary` sheet: run info, totals per result, page issues, digit colors
 
 The spreadsheet's first sheet is used. Columns are found by header (`name`/`nom`, `rib`/`rip`);
 otherwise column A is the name and column B the RIB. Keep the RIB column formatted as **Text**
