@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use umya_spreadsheet::{RichText, TextElement, Workbook, Worksheet, writer};
 
 use crate::report::{
-    CASE_NOT_READ, DocResult, ResultRow, Status, count, describe_marks, page_issues,
+    CASE_NOT_READ, DocResult, ResultRow, Status, count, describe_marks, page_issues, red_total,
 };
 use crate::rib::Mark;
 
@@ -194,8 +194,21 @@ fn write_summary(sheet: &mut Worksheet, rows: &[ResultRow], docs: &[DocResult], 
 
     out.bold_row(&["Result", "Count", "Meaning"]);
     for status in Status::ALL {
+        if status == Status::RED[0] {
+            let red = red_total(rows).to_string();
+            let row = out.row;
+            out.colored_row(&[Status::RED_LABEL, &red, Status::RED_MEANING], status);
+            for col in 1..=3 {
+                out.sheet.style_mut((col, row)).font_mut().set_bold(true);
+            }
+        }
         let n = count(rows, status, |r| r.status).to_string();
-        out.colored_row(&[status.label(), &n, status.meaning()], status);
+        let label = if status.is_red() {
+            format!("    {}", status.label())
+        } else {
+            status.label().to_string()
+        };
+        out.colored_row(&[&label, &n, status.meaning()], status);
     }
     out.bold_row(&["Total", &rows.len().to_string()]);
     out.skip();

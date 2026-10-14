@@ -155,7 +155,8 @@ Results go to a new file in the output folder, `<name>_results.xlsx`; the spread
 is never changed. A re-run replaces that file (if it is open in Excel, a time-stamped copy is
 written instead).
 
-1. `Summary` sheet (opens first): run info, totals per result, page issues, digit colors
+1. `Summary` sheet (opens first): run info, totals per result (the red total first, then
+   each red result below it, as in the terminal), page issues, digit colors
 2. `Results` sheet, in PDF page order: `Pages`, `Result`, `Scan details`, `Scan RIB read`,
    `RIB`, `Full name`, `Case number`, each line colored by its result
 

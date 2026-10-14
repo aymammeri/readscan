@@ -44,6 +44,22 @@ impl Status {
         Status::NotScanned,
     ];
 
+    /// Results shown in red, in `ALL` order: each needs an action.
+    pub const RED: [Status; 6] = [
+        Status::Weak,
+        Status::Mismatch,
+        Status::Duplicate,
+        Status::NoCheck,
+        Status::MissingRib,
+        Status::Unreadable,
+    ];
+    pub const RED_LABEL: &str = "RED TOTAL";
+    pub const RED_MEANING: &str = "Needs action. Details below.";
+
+    pub fn is_red(self) -> bool {
+        Status::RED.contains(&self)
+    }
+
     /// MATCH, STRONG, PARTIAL or WEAK: the check shows this RIB, fully or in part.
     pub fn is_match(self) -> bool {
         self >= Status::Weak
@@ -379,17 +395,25 @@ pub fn print_results(rows: &[ResultRow], docs: &[DocResult]) {
         }
     }
 
-    let totals: Vec<String> = Status::ALL
-        .iter()
-        .filter_map(|&s| {
-            let n = count(rows, s, |r| r.status);
-            (n > 0).then(|| {
-                s.paint(&format!("{n} {}", s.label().to_lowercase()))
-                    .to_string()
-            })
-        })
-        .collect();
-    println!("\n{}", totals.join("  "));
+    println!("\n{}", format!("Total: {}", rows.len()).bold());
+    let red = red_total(rows);
+    for status in Status::ALL {
+        if status == Status::RED[0] && red > 0 {
+            let line = format!("{red} red, need action");
+            println!("  {}", status.paint(&line).bold());
+        }
+        let n = count(rows, status, |r| r.status);
+        if n > 0 {
+            let indent = if status.is_red() { "    " } else { "  " };
+            let line = format!("{n} {}", status.label().to_lowercase());
+            println!("{indent}{}", status.paint(&line));
+        }
+    }
+}
+
+/// Rows shown in red.
+pub fn red_total(rows: &[ResultRow]) -> usize {
+    rows.iter().filter(|r| r.status.is_red()).count()
 }
 
 #[cfg(test)]
@@ -471,6 +495,10 @@ mod tests {
         assert!(Status::Partial > Status::Weak);
         assert!(Status::Weak > Status::Mismatch);
         assert_eq!(Status::Weak.fill_argb(), Status::Duplicate.fill_argb());
+        for status in Status::ALL {
+            let red = status.fill_argb() == Status::Weak.fill_argb();
+            assert_eq!(status.is_red(), red, "{status:?}");
+        }
         assert!(Status::Weak.is_tier() && !Status::Match.is_tier() && !Status::Mismatch.is_match());
     }
 }
