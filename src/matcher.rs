@@ -1,12 +1,40 @@
 use strsim::normalized_levenshtein;
 
 use crate::sheet::Directory;
-use crate::text::{normalize_name, normalize_rib};
+use crate::text::normalize_name;
 
 /// Minimum similarity for an OCR word to count as a name word (tolerates 1 typo in ~5 letters).
 const WORD_SIMILARITY: f64 = 0.8;
-/// A check page with no line holding at least this many digits has no readable RIB on it.
-const MIN_RIB_DIGITS: usize = 10;
+
+/// Every name page carries this title; checks never do.
+const TITLE_WORDS: [&str; 2] = ["QUITTANCE", "REGLEMENT"];
+
+/// True when the page shows the QUITTANCE DE REGLEMENT title, tolerating accents,
+/// OCR typos and words glued together.
+pub fn has_title(ocr_text: &str) -> bool {
+    let normalized = normalize_name(ocr_text);
+    let words: Vec<&str> = normalized.split(' ').collect();
+    let compact = words.concat();
+    TITLE_WORDS.iter().all(|title| {
+        compact.contains(title)
+            || words
+                .iter()
+                .any(|w| normalized_levenshtein(title, w) >= WORD_SIMILARITY)
+    })
+}
+
+/// Words printed on every check ("Payez contre ce chèque"). Reading one proves the page is
+/// upright: upside-down print never comes out of OCR as real words.
+const CHECK_WORDS: [&str; 3] = ["PAYEZ", "CHEQUE", "BANQUE"];
+
+/// True when the page reads like an upright check.
+pub fn looks_like_check(ocr_text: &str) -> bool {
+    normalize_name(ocr_text).split(' ').any(|w| {
+        CHECK_WORDS
+            .iter()
+            .any(|word| normalized_levenshtein(word, w) >= WORD_SIMILARITY)
+    })
+}
 
 pub enum NameMatch {
     Found(usize),
@@ -68,33 +96,29 @@ pub fn find_person(dir: &Directory, ocr_text: &str) -> NameMatch {
     }
 }
 
-pub enum RibMatch {
-    Matched(usize),
-    Mismatch { seen: Vec<String> },
-    Unreadable,
-}
+#[cfg(test)]
+mod tests {
+    use super::has_title;
 
-/// Look for any of the person's RIBs in the OCR text of the check page.
-pub fn check_rib(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibMatch {
-    let lines: Vec<String> = ocr_text.lines().map(normalize_rib).collect();
-    // A RIB is sometimes split over two OCR lines.
-    let whole_page = lines.concat();
-
-    for &id in entry_ids {
-        let rib = normalize_rib(&dir.entries[id].rib);
-        if lines.iter().any(|l| l.contains(&rib)) || whole_page.contains(&rib) {
-            return RibMatch::Matched(id);
-        }
+    #[test]
+    fn title_found_with_accents_and_typos() {
+        assert!(has_title("QUITTANCE DE RÈGLEMENT\nNom : X"));
+        assert!(has_title("Quittance de reglement"));
+        assert!(has_title("QUITTANCEDEREGLEMENT"));
+        assert!(has_title("QU1TTANCE DE REGLEMEN"));
     }
 
-    let seen: Vec<String> = ocr_text
-        .lines()
-        .map(|l| l.chars().filter(char::is_ascii_digit).collect::<String>())
-        .filter(|digits| digits.len() >= MIN_RIB_DIGITS)
-        .collect();
-    if seen.is_empty() {
-        RibMatch::Unreadable
-    } else {
-        RibMatch::Mismatch { seen }
+    #[test]
+    fn upright_check_words() {
+        assert!(super::looks_like_check("Payez contre ce chèque"));
+        assert!(!super::looks_like_check("ənbəɥɔ əɔ ǝɹʇuoɔ zəʎɐd"));
+    }
+
+    #[test]
+    fn check_page_has_no_title() {
+        assert!(!has_title(
+            "BANQUE NATIONALE\nPayez contre ce cheque\nRIB : 001 00123"
+        ));
+        assert!(!has_title("QUITTANCE"));
     }
 }

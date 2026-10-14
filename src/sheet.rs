@@ -4,7 +4,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use calamine::{Data, Reader, open_workbook_auto};
 
-use crate::text::{normalize_name, normalize_rib};
+use crate::rib;
+use crate::text::normalize_name;
 
 /// One spreadsheet row we care about.
 #[derive(Debug, Clone)]
@@ -12,7 +13,10 @@ pub struct Entry {
     /// 1-based row number as shown in Excel.
     pub row: u32,
     pub full_name: String,
+    /// As written in the spreadsheet.
     pub rib: String,
+    /// The 20 digits compared with the checks.
+    pub rib_digits: String,
 }
 
 /// A person may own several bank accounts, so entries are grouped by normalized name.
@@ -31,6 +35,8 @@ pub struct Layout {
     pub first_col: u32,
     /// 1-based sheet row of the header, if the sheet has one.
     pub header_row: Option<u32>,
+    /// 1-based sheet column holding the RIB.
+    pub rib_col: u32,
 }
 
 pub struct Directory {
@@ -38,6 +44,8 @@ pub struct Directory {
     pub persons: Vec<Person>,
     pub layout: Layout,
     entry_person: Vec<usize>,
+    /// Every run of `rib::INDEX_RUN` digits of every RIB, to the entries holding it.
+    rib_runs: HashMap<String, Vec<usize>>,
 }
 
 impl Directory {
@@ -58,12 +66,27 @@ impl Directory {
             persons[idx].entry_ids.push(id);
             entry_person.push(idx);
         }
+        let mut rib_runs: HashMap<String, Vec<usize>> = HashMap::new();
+        for (id, entry) in entries.iter().enumerate() {
+            for run in rib::runs(&entry.rib_digits) {
+                let holders = rib_runs.entry(run.to_string()).or_default();
+                if holders.last() != Some(&id) {
+                    holders.push(id);
+                }
+            }
+        }
         Self {
+            rib_runs,
             entries,
             persons,
             layout,
             entry_person,
         }
+    }
+
+    /// Entries whose RIB holds `run`.
+    pub fn entries_with_run(&self, run: &str) -> &[usize] {
+        self.rib_runs.get(run).map_or(&[], Vec::as_slice)
     }
 
     pub fn person_of(&self, entry: usize) -> usize {
@@ -105,16 +128,32 @@ pub fn load(path: &Path) -> Result<Directory> {
         .filter_map(|(i, row)| {
             let full_name = row.get(name_col)?.trim().to_string();
             let rib = row.get(rib_col)?.trim().to_string();
-            if full_name.is_empty() || normalize_rib(&rib).is_empty() {
+            let rib_digits = rib::from_sheet(&rib);
+            if full_name.is_empty() || rib_digits.is_empty() {
                 return None;
             }
             Some(Entry {
                 row: first_row + i as u32,
                 full_name,
                 rib,
+                rib_digits,
             })
         })
         .collect();
+
+    for e in entries
+        .iter()
+        .filter(|e| e.rib_digits.len() != rib::RIB_LEN)
+    {
+        eprintln!(
+            "Warning: row {} ({}): RIB \"{}\" has {} digits, not {}. Fix it in the spreadsheet.",
+            e.row,
+            e.full_name,
+            e.rib,
+            e.rib_digits.len(),
+            rib::RIB_LEN
+        );
+    }
 
     if entries.is_empty() {
         bail!("no rows with both a full name and a RIB were found");
@@ -124,6 +163,7 @@ pub fn load(path: &Path) -> Result<Directory> {
         first_row,
         first_col,
         header_row: (skip == 1).then_some(first_row),
+        rib_col: first_col + rib_col as u32,
     };
     Ok(Directory::new(entries, layout))
 }

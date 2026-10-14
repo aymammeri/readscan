@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use umya_spreadsheet::{Workbook, Worksheet, reader, writer};
+use umya_spreadsheet::{RichText, TextElement, Workbook, Worksheet, reader, writer};
 
-use crate::report::{DocResult, EntryReport, Status, count};
+use crate::report::{DocResult, EntryReport, Status, count, describe_marks, page_issues};
+use crate::rib::{self, Mark};
 use crate::sheet::{Directory, Layout};
 
 /// Columns appended to the first sheet: header and width. Found again by header on re-runs.
@@ -76,10 +77,7 @@ pub fn write_results(
         return Ok(Saved {
             path: results_copy,
             backup: None,
-            note: Some(
-                "This format can't be edited in place, results were saved as a new .xlsx file."
-                    .into(),
-            ),
+            note: Some("This format can't be edited. Results saved as a new .xlsx file.".into()),
         });
     }
 
@@ -100,8 +98,7 @@ pub fn write_results(
                 path: results_copy,
                 backup: None,
                 note: Some(format!(
-                    "Could not overwrite the spreadsheet ({e}). Is it open in Excel? \
-                     Results were saved to a new file instead."
+                    "Spreadsheet not overwritten ({e}). Close it in Excel next time. Results saved to a new file."
                 )),
             })
         }
@@ -129,16 +126,32 @@ fn annotate_rows(sheet: &mut Worksheet, dir: &Directory, reports: &[EntryReport]
 
     let last = first + RESULT_COLUMNS.len() as u32 - 1;
     for (entry, report) in dir.entries.iter().zip(reports) {
+        let marks = report
+            .aligned
+            .as_deref()
+            .map(|aligned| (aligned, rib::score(&entry.rib_digits, aligned)));
+        let detail = match &marks {
+            Some((_, marks)) => format!("{} Digits: {}.", report.detail, describe_marks(marks)),
+            None => report.detail.clone(),
+        };
         let values = [
             report.status.label(),
             &report.pages,
             &report.rib_read,
-            &report.detail,
+            &detail,
         ];
         for (i, value) in values.iter().enumerate() {
             sheet
                 .cell_mut((first + i as u32, entry.row))
                 .set_value_string(*value);
+        }
+        if let Some((aligned, marks)) = &marks {
+            sheet
+                .cell_mut((first + 2, entry.row))
+                .set_rich_text(marked(aligned, marks));
+            let rib_cell = sheet.cell_mut((layout.rib_col, entry.row));
+            let original = rib_cell.value().into_owned();
+            rib_cell.set_rich_text(marked_in_place(&original, marks));
         }
         for col in layout.first_col..=last {
             sheet
@@ -146,6 +159,59 @@ fn annotate_rows(sheet: &mut Worksheet, dir: &Directory, reports: &[EntryReport]
                 .set_background_color(report.status.fill_argb());
         }
     }
+}
+
+/// Excel's dark "Good / Neutral / Bad" text colors, readable on every row fill.
+fn mark_argb(mark: Mark) -> &'static str {
+    match mark {
+        Mark::Bull => "FF006100",
+        Mark::Cow => "FFC65911",
+        Mark::Miss => "FF9C0006",
+        Mark::NotRead => "FF808080",
+    }
+}
+
+fn run(text: &str, mark: Option<Mark>) -> TextElement {
+    let mut element = TextElement::default();
+    element.set_text(text);
+    if let Some(mark) = mark {
+        let font = element.run_properties_mut();
+        font.color_mut().set_argb_str(mark_argb(mark));
+        font.set_bold(mark != Mark::NotRead);
+    }
+    element
+}
+
+/// One colored character per position of the reading.
+fn marked(aligned: &str, marks: &[Mark]) -> RichText {
+    let mut text = RichText::default();
+    for (c, &mark) in aligned.chars().zip(marks) {
+        text.add_rich_text_elements(run(&c.to_string(), Some(mark)));
+    }
+    text
+}
+
+/// Color the RIB digits of a spreadsheet cell in place, keeping its spaces and any prefix.
+/// The RIB is the last 20 digits of the cell, so marks are laid from the right.
+fn marked_in_place(original: &str, marks: &[Mark]) -> RichText {
+    let mut remaining = marks.len();
+    let mut runs: Vec<TextElement> = original
+        .chars()
+        .rev()
+        .map(|c| {
+            let mark = (c.is_ascii_digit() && remaining > 0).then(|| {
+                remaining -= 1;
+                marks[remaining]
+            });
+            run(&c.to_string(), mark)
+        })
+        .collect();
+    runs.reverse();
+    let mut text = RichText::default();
+    for element in runs {
+        text.add_rich_text_elements(element);
+    }
+    text
 }
 
 fn write_summary(
@@ -183,13 +249,45 @@ fn write_summary(
     out.skip();
 
     out.bold_row(&["Scanned documents", "Count"]);
-    for status in [Status::Green, Status::Red, Status::Yellow] {
+    for status in [
+        Status::Green,
+        Status::Partial,
+        Status::Red,
+        Status::Rotated,
+        Status::Order,
+        Status::Yellow,
+    ] {
         let n = count(docs, status, |d| d.status).to_string();
         out.colored_row(&[status.label(), &n], status);
     }
     let unknown = docs.iter().filter(|d| d.person.is_none()).count();
     out.row(&["Name not found", &unknown.to_string()]);
     out.bold_row(&["Total", &docs.len().to_string()]);
+    out.skip();
+
+    let issues = page_issues(docs);
+    if !issues.is_empty() {
+        out.bold_row(&["Page issues", "Pages", "What to do"]);
+        for (pages, issue) in issues {
+            out.colored_row(&["", pages, issue], Status::Order);
+        }
+        out.skip();
+    }
+
+    out.bold_row(&["RIB digit colors"]);
+    for (mark, meaning) in [
+        (Mark::Bull, "Right digit, right place"),
+        (Mark::Cow, "Right digit, wrong place"),
+        (Mark::Miss, "Wrong digit"),
+        (Mark::NotRead, "Unread"),
+    ] {
+        let row = out.row;
+        out.row(&["", meaning]);
+        let sample = if mark == Mark::NotRead { "?" } else { "0" };
+        out.sheet
+            .cell_mut((1, row))
+            .set_rich_text(marked(sample, &[mark]));
+    }
     out.skip();
 
     out.bold_row(&["Notes"]);
@@ -211,29 +309,36 @@ fn notes(
     backup: Option<&PathBuf>,
 ) -> Vec<String> {
     let mut notes = vec![format!(
-        "Rows are colored in sheet \"{data_sheet}\". Every scanned document is listed in \"{DOCUMENTS_SHEET}\"."
+        "Results per row: sheet \"{data_sheet}\". All documents: sheet \"{DOCUMENTS_SHEET}\"."
     )];
-    let red = count(reports, Status::Red, |r| r.status);
-    if red > 0 {
-        notes.push(format!(
-            "{red} row(s) have a RIB that does not match the check (red)."
-        ));
-    }
-    let yellow = count(reports, Status::Yellow, |r| r.status);
-    if yellow > 0 {
-        notes.push(format!(
-            "{yellow} row(s) could not be verified and need a manual check (yellow)."
-        ));
+    let rows = |status: Status| count(reports, status, |r| r.status);
+    for (status, message) in [
+        (Status::Partial, "blue: check the RIB by hand."),
+        (Status::Red, "red: wrong RIB. Verify check and spreadsheet."),
+        (Status::Rotated, "purple: page rotated. Rescan upright."),
+        (Status::Order, "orange: pages out of order. Fix and rescan."),
+        (Status::Yellow, "yellow: unreadable. Check by hand."),
+    ] {
+        let n = rows(status);
+        if n > 0 {
+            notes.push(format!("{n} row(s) {message}"));
+        }
     }
     let unknown = docs.iter().filter(|d| d.person.is_none()).count();
     if unknown > 0 {
         notes.push(format!(
-            "{unknown} scanned document(s) could not be linked to any name in the spreadsheet, see \"{DOCUMENTS_SHEET}\"."
+            "{unknown} document(s) match no name. See \"{DOCUMENTS_SHEET}\"."
+        ));
+    }
+    let issues = page_issues(docs).len();
+    if issues > 0 {
+        notes.push(format!(
+            "{issues} page issue(s). See \"Page issues\" above."
         ));
     }
     if let Some(backup) = backup.and_then(|b| b.file_name()) {
         notes.push(format!(
-            "The spreadsheet as it was before this scan is saved as \"{}\".",
+            "Previous version saved as \"{}\".",
             backup.to_string_lossy()
         ));
     }
@@ -245,10 +350,18 @@ fn write_documents(sheet: &mut Worksheet, dir: &Directory, docs: &[DocResult]) {
     out.bold_row(&["Pages", "Name", "Result", "RIB read on check", "Details"]);
     for d in docs {
         let name = d.person.map_or("(not found)", |_| d.person_name(dir));
+        let row = out.row;
         out.colored_row(
             &[&d.pages, name, d.status.label(), &d.rib_read, &d.detail],
             d.status,
         );
+        if let Some(reading) = &d.reading {
+            let expected = &dir.entries[reading.entry].rib_digits;
+            let marks = rib::score(expected, &reading.aligned);
+            out.sheet
+                .cell_mut((4, row))
+                .set_rich_text(marked(&reading.aligned, &marks));
+        }
     }
     for (col, width) in [(1, 10.0), (2, 30.0), (3, 14.0), (4, 28.0), (5, 90.0)] {
         out.sheet

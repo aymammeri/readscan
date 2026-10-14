@@ -1,6 +1,9 @@
+mod document;
 mod export;
 mod matcher;
+mod pairing;
 mod report;
+mod rib;
 mod scan;
 mod sheet;
 mod text;
@@ -17,13 +20,9 @@ use colored::Colorize;
 use rayon::prelude::*;
 
 use export::RunInfo;
-use matcher::{NameMatch, RibMatch};
-use report::{DocResult, Status};
-use scan::Scanner;
-use sheet::Directory;
-
-/// Text shorter than this (in letters/digits) means OCR got nothing usable from the page.
-const MIN_READABLE_CHARS: usize = 3;
+use pairing::{PageKind, Unit};
+use report::DocResult;
+use scan::{PageText, Scanner, Turn};
 
 fn main() {
     let threads = use_all_threads();
@@ -86,21 +85,36 @@ fn run(threads: usize) -> Result<()> {
     // instead of two pools competing for the same cores. `par_bridge` is a FIFO queue:
     // each free thread takes the next page in order (1, 2, 3, ...).
     let results: Vec<DocResult> = rten::thread_pool().run(|| {
-        let mut pages: Vec<(usize, Result<String>)> = (0..page_count)
+        let mut pages: Vec<(usize, Result<PageText>)> = (0..page_count)
             .par_bridge()
             .map(|page| {
-                let text = scanner.read_page(page);
+                let text = scanner.read_page(page, Turn::None);
                 progress.lock().expect("progress lock").finish(page);
                 (page, text)
             })
             .collect();
         pages.sort_by_key(|(page, _)| *page);
-        let texts: Vec<Result<String>> = pages.into_iter().map(|(_, text)| text).collect();
+        let texts: Vec<Result<PageText>> = pages.into_iter().map(|(_, text)| text).collect();
 
-        texts
-            .par_chunks(2)
-            .enumerate()
-            .map(|(doc, sides)| process_document(&dir, doc * 2, &sides[0], sides.get(1)))
+        let kinds: Vec<PageKind> = texts
+            .iter()
+            .map(|text| match text {
+                Ok(t) if matcher::has_title(&t.text) => PageKind::Title,
+                _ => PageKind::Other,
+            })
+            .collect();
+        pairing::pair(&kinds)
+            .par_iter()
+            .map(|unit| match *unit {
+                Unit::Document { name, check, issue } => {
+                    let result = document::process_document(&dir, &scanner, name, check, &texts);
+                    match issue {
+                        Some(issue) => result.with_issue(issue, name),
+                        None => result,
+                    }
+                }
+                Unit::Stray { page } => document::process_stray(&dir, page, &texts[page]),
+            })
             .collect()
     });
 
@@ -119,12 +133,12 @@ fn run(threads: usize) -> Result<()> {
     };
     let saved = export::write_results(&dir, &results, &reports, &info)?;
     println!(
-        "\n{} Results written to {}",
+        "\n{} Results saved to {}",
         "i".cyan().bold(),
         saved.path.display()
     );
     if let Some(backup) = saved.backup {
-        println!("  Original spreadsheet backed up as {}", backup.display());
+        println!("  Previous version saved as {}", backup.display());
     }
     if let Some(note) = saved.note {
         println!("  {note}");
@@ -161,100 +175,14 @@ impl Progress {
                     "  [{}/{}] pages {} read",
                     name_page / 2 + 1,
                     self.page_count.div_ceil(2),
-                    page_range(name_page, self.next - 1 - name_page)
+                    document::page_range(
+                        name_page,
+                        (self.next - 1 > name_page).then_some(name_page + 1)
+                    )
                 );
             }
         }
     }
-}
-
-/// 1-based label for the document starting at 0-based `name_page`.
-fn page_range(name_page: usize, extra_pages: usize) -> String {
-    if extra_pages > 0 {
-        format!("{}-{}", name_page + 1, name_page + 2)
-    } else {
-        format!("{}", name_page + 1)
-    }
-}
-
-/// Match one document from the OCR text of its two sides. The check is only
-/// interpreted once the name is known.
-fn process_document(
-    dir: &Directory,
-    name_page: usize,
-    name_text: &Result<String>,
-    check_text: Option<&Result<String>>,
-) -> DocResult {
-    let mut result = DocResult {
-        pages: page_range(name_page, usize::from(check_text.is_some())),
-        person: None,
-        matched_entry: None,
-        status: Status::Yellow,
-        rib_read: String::new(),
-        detail: String::new(),
-    };
-
-    let name_text = match name_text {
-        Ok(t) if is_readable(t) => t,
-        Ok(_) => return result.yellow("name page unreadable"),
-        Err(e) => return result.yellow(&format!("name page OCR failed: {e}")),
-    };
-
-    let person = match matcher::find_person(dir, name_text) {
-        NameMatch::Found(p) => p,
-        NameMatch::Ambiguous(ids) => {
-            let names: Vec<&str> = ids.iter().map(|&p| dir.person_name(p)).collect();
-            return result.yellow(&format!("name is ambiguous: {}", names.join(" / ")));
-        }
-        NameMatch::NotFound => {
-            let excerpt: String = name_text
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .chars()
-                .take(80)
-                .collect();
-            return result.yellow(&format!(
-                "no spreadsheet name found (OCR: \"{excerpt}...\")"
-            ));
-        }
-    };
-    result.person = Some(person);
-
-    let check_text = match check_text {
-        Some(Ok(t)) if is_readable(t) => t,
-        Some(Ok(_)) => return result.yellow("check page unreadable"),
-        Some(Err(e)) => return result.yellow(&format!("check page OCR failed: {e}")),
-        None => return result.yellow("check page missing"),
-    };
-
-    match matcher::check_rib(dir, &dir.persons[person].entry_ids, check_text) {
-        RibMatch::Matched(entry) => {
-            result.matched_entry = Some(entry);
-            result.status = Status::Green;
-            result.rib_read = dir.entries[entry].rib.clone();
-            result.detail = format!("RIB {} OK", dir.entries[entry].rib);
-        }
-        RibMatch::Mismatch { seen } => {
-            result.status = Status::Red;
-            result.rib_read = seen.join(" | ");
-            result.detail = format!("RIB mismatch, check shows: {}", result.rib_read);
-        }
-        RibMatch::Unreadable => return result.yellow("no RIB readable on check"),
-    }
-    result
-}
-
-impl DocResult {
-    fn yellow(mut self, detail: &str) -> Self {
-        self.status = Status::Yellow;
-        self.detail = detail.to_string();
-        self
-    }
-}
-
-fn is_readable(text: &str) -> bool {
-    text.chars().filter(|c| c.is_alphanumeric()).count() >= MIN_READABLE_CHARS
 }
 
 /// Ask for a path. Accepts paths pasted with quotes ("Copy as path" on Windows)
