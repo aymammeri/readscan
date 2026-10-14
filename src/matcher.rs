@@ -32,8 +32,10 @@ pub fn looks_like_check(ocr_text: &str) -> bool {
     has_word(ocr_text, &CHECK_WORDS)
 }
 
-/// Digit groups of a case number, as printed: "2605-2026-110201".
-const CASE_GROUPS: [usize; 3] = [4, 4, 6];
+/// Digits of each part of a case number, as printed: "2605-2026-110201", "26741-2026-110334".
+const CASE_AGENCY_DIGITS: [usize; 2] = [4, 5];
+const CASE_YEAR_DIGITS: usize = 4;
+const CASE_SERIAL_DIGITS: usize = 6;
 /// Words before the case number on a QUITTANCE ("Dossier Sinistre").
 const CASE_WORDS: [&str; 2] = ["DOSSIER", "SINISTRE"];
 
@@ -76,27 +78,39 @@ fn has_word(line: &str, words: &[&str]) -> bool {
     })
 }
 
-/// Case number of a QUITTANCE, as "2605-2026-110201": three digit groups of 4, 4 and 6 on
-/// one line, or 14 digits on the "Dossier Sinistre" line when OCR lost a separator. The
-/// "Dossier Sinistre" line is tried first.
+/// Case number of a QUITTANCE, as "2605-2026-110201": the agency code (4 or 5 digits), a
+/// year, 6 digits. OCR often drops a separator ("2617 2026110388"), so neighbouring digit
+/// groups on a line are joined until they make a whole case number, as long as they only
+/// break between its parts. The middle part must be a year (20xx), which rules out other
+/// numbers ("Police 2610 1100049211"). The "Dossier Sinistre" line is tried first.
 pub fn case_number(ocr_text: &str) -> Option<String> {
-    let format = |digits: &str| format!("{}-{}-{}", &digits[..4], &digits[4..8], &digits[8..]);
-    let labeled = || ocr_text.lines().filter(|l| has_word(l, &CASE_WORDS));
-    let lines = || labeled().chain(ocr_text.lines());
-    let grouped = lines().find_map(|line| {
-        let groups: Vec<&str> = line
-            .split(|c: char| !c.is_ascii_digit())
-            .filter(|g| !g.is_empty())
-            .collect();
-        groups
-            .windows(3)
-            .find(|w| w.iter().map(|g| g.len()).eq(CASE_GROUPS))
-            .map(|w| w.join("-"))
-    });
-    grouped.or_else(|| {
-        labeled().find_map(|line| {
-            let digits: String = line.chars().filter(char::is_ascii_digit).collect();
-            (digits.len() == CASE_GROUPS.iter().sum::<usize>()).then(|| format(&digits))
+    let labeled = ocr_text.lines().filter(|l| has_word(l, &CASE_WORDS));
+    labeled.chain(ocr_text.lines()).find_map(case_in_line)
+}
+
+fn case_in_line(line: &str) -> Option<String> {
+    let groups: Vec<&str> = line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|g| !g.is_empty())
+        .collect();
+    (0..groups.len()).find_map(|start| {
+        CASE_AGENCY_DIGITS.into_iter().find_map(|agency| {
+            let year_end = agency + CASE_YEAR_DIGITS;
+            let total = year_end + CASE_SERIAL_DIGITS;
+            let mut digits = String::new();
+            for group in &groups[start..] {
+                digits.push_str(group);
+                let len = digits.len();
+                if len == total {
+                    break;
+                }
+                if len > total || (len != agency && len != year_end) {
+                    return None;
+                }
+            }
+            let year = digits.get(agency..year_end)?;
+            (digits.len() == total && year.starts_with("20"))
+                .then(|| format!("{}-{year}-{}", &digits[..agency], &digits[year_end..]))
         })
     })
 }
@@ -195,6 +209,23 @@ mod tests {
             Some("2605-2026-110201")
         );
         assert_eq!(case_number("Date 26-05-2026\nMontant 25 000 DA"), None);
+        assert_eq!(
+            case_number("N? Dossier Sinistre 2617 2026110388 Survenu le 05/09/2026").as_deref(),
+            Some("2617-2026-110388")
+        );
+        assert_eq!(
+            case_number("N Dossier Sinistre 3011. 2026110792 Survenue 15/08/2026").as_deref(),
+            Some("3011-2026-110792")
+        );
+        assert_eq!(case_number("Police 2610 1100049211"), None);
+        assert_eq!(
+            case_number("N Dossier Sinistre 26741 2026 110334 Survenue 17/07/2026").as_deref(),
+            Some("26741-2026-110334")
+        );
+        assert_eq!(
+            case_number("N ?Dossier Sinistre 260 2026110743 Survenu e 09/09/2026"),
+            None
+        );
         assert_eq!(
             case_number("N° Dossier Sinistre   2610 - 2026 - 110307   Survenu le 03/03/2026")
                 .as_deref(),

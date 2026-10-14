@@ -81,8 +81,14 @@ document is never better than STRONG ("Check the name."). Otherwise it is UNREAD
 1. each row is cut into digit pieces: spaces and `- . / :` are ignored; letters and garbage symbols
    (`#`, `~`, `*`...) cut the number; a lone look-alike letter touching digits (`O`, `I`, `S`, `B`...)
    is read as a digit
-2. **MATCH**: all 20 digits found, in one piece, in a row's pieces joined, or over two rows joined
-3. otherwise each row's pieces are laid on the RIB where they share the longest run of digits
+2. **MATCH**: all 20 digits found, in one piece, in a row's pieces joined, or over two rows joined.
+   The RIB key (last 2 digits = 97 − (digits 4 to 18 × 100 mod 97)) also confirms a MATCH: a
+   reading with a good key that differs only in the bank code (digits 1 to 3, not covered by the
+   key), or the account and key printed on their own (`0000015098 17` on Algérie Poste checks)
+3. **MISMATCH**: a reading with a good key that is none of the person's RIBs. A single misread
+   digit always breaks the key, so the check really shows another RIB, however many digits it
+   shares (every postal RIB starts with `00799999`)
+4. otherwise each row's pieces are laid on the RIB where they share the longest run of digits
    (from the left, the right or the middle), and the reading gets a tier by how many digits
    match, wherever they are:
    - **STRONG**: 11 to 19
@@ -90,8 +96,13 @@ document is never better than STRONG ("Check the name."). Otherwise it is UNREAD
    - **WEAK**: 4 or 5
 
    all three are flagged for a manual check
-4. **MISMATCH**: otherwise, a clean 20-digit number was read and fewer than 4 of its digits match
-5. **UNREADABLE**: otherwise; whatever digits were read are shown for a manual check
+5. **MISMATCH**: otherwise, a clean 20-digit number was read and fewer than 4 of its digits match
+6. **UNREADABLE**: otherwise; whatever digits were read are shown for a manual check
+
+A check that is not a full MATCH is read once more at 200 DPI (instead of 150) and both readings
+are looked at together; the second read is kept only if it completes the RIB. On a real batch of
+159 checks this took full matches from 87% to 96% for about 5% more time (300 DPI reads worse).
+Spreadsheet RIBs with a wrong key are warned about when the spreadsheet is loaded.
 
 **6. Rotated pages.** Only a document that fails gets this step, and only for the page that
 failed. Pages that are clearly upright are never re-read: a name page with a readable title, or a
@@ -106,7 +117,8 @@ and the page is flagged ("Page 2 upside down. Read turned. Rescan it."). If the 
 fails on a rotated or tilted page, it is **ROTATED** ("Page 8 tilted 45°. Rescan it.").
 
 **7. Case number and duplicates.** Each QUITTANCE has a case number ("N° Dossier Sinistre
-2610 - 2026 - 110307"); it is mandatory. When it can't be read, the `Case number` cell says
+2610 - 2026 - 110307", agency codes have 4 or 5 digits); it is mandatory. OCR often drops a
+separator, so digit groups are joined back when they only split between the parts. When it can't be read, the `Case number` cell says
 **NOT READ** in red, the details say "case number not read. Check it.", and the page goes into the
 checked PDF even if the RIB matched. A
 document with the same full name and case number as an earlier one is a **DUPLICATE**. The same
@@ -142,8 +154,8 @@ is never changed. A re-run replaces that file (if it is open in Excel, a time-st
 written instead).
 
 1. `Summary` sheet (opens first): run info, totals per result, page issues, digit colors
-2. `Results` sheet, in PDF page order: `Pages`, `Case number`, `Result`, `Scan details`,
-   `Scan RIB read`, `RIB`, `Full name`, each line colored by its result
+2. `Results` sheet, in PDF page order: `Pages`, `Result`, `Scan details`, `Scan RIB read`,
+   `RIB`, `Full name`, `Case number`, each line colored by its result
 
 A copy of the PDF, `<name>_checked.pdf`, is written in the same folder. Every document that is not a
 full MATCH, or has no case number, gets a banner above its check page (or its QUITTANCE when the check is missing), in

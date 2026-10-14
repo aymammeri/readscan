@@ -15,6 +15,9 @@ use rten_imageproc::RotatedRect;
 /// 150 DPI is ~44% fewer pixels than 200 and still enough for printed text.
 /// Raise it if RIB digits on real checks start being misread.
 const RENDER_DPI: f32 = 150.0;
+/// A check whose RIB didn't fully match is read once more at this resolution: on real checks
+/// it recovers about a third of the misread RIBs (300 DPI does worse than both).
+pub const RETRY_DPI: f32 = 200.0;
 /// Placed between OCR lines that were joined back into one printed row.
 const SEGMENT_GAP: &str = "   ";
 
@@ -63,9 +66,14 @@ impl Scanner {
 
     /// Render one page (0-based), turn it, and OCR it.
     pub fn read_page(&self, index: usize, turn: Turn) -> Result<PageText> {
+        self.read_page_at(index, turn, RENDER_DPI)
+    }
+
+    /// Render one page (0-based) at `dpi`, turn it, and OCR it.
+    pub fn read_page_at(&self, index: usize, turn: Turn, dpi: f32) -> Result<PageText> {
         let page = &self.pdf.pages()[index];
         let (width, height) = page.render_dimensions();
-        let scale = (RENDER_DPI / 72.0).min(u16::MAX as f32 / width.max(height));
+        let scale = (dpi / 72.0).min(u16::MAX as f32 / width.max(height));
         let cache = RenderCache::new();
         let pixmap = hayro::render(
             page,

@@ -6,7 +6,7 @@ use crate::matcher::{self, NameMatch};
 use crate::pairing::Issue;
 use crate::report::{DocResult, Status};
 use crate::rib::{self, RibMatch};
-use crate::scan::{PageText, Scanner, Turn};
+use crate::scan::{self, PageText, Scanner, Turn};
 use crate::sheet::Directory;
 
 /// Text shorter than this (in letters/digits) means OCR got nothing usable from the page.
@@ -148,6 +148,39 @@ fn check_document(
         }
         if best.status == Status::Match {
             break;
+        }
+    }
+
+    // A RIB not fully matched: read the check again at another resolution, which misreads
+    // different digits, and look at both readings together. Kept only if that completes it.
+    if let Some(c) = check_page
+        && best.person.is_some()
+        && best.status != Status::Match
+        && best.status != Status::MissingRib
+    {
+        let turn = turned
+            .iter()
+            .find(|(p, _)| *p == c)
+            .map_or(Turn::None, |(_, t)| *t);
+        let first = fixed_check
+            .clone()
+            .or_else(|| texts[c].as_ref().ok().map(|t| t.text.clone()))
+            .unwrap_or_default();
+        if let Ok(again) = scanner.read_page_at(c, turn, scan::RETRY_DPI) {
+            let both = format!("{first}\n{}", again.text);
+            let name_text = match &fixed_name {
+                Some(t) => Ok(t.as_str()),
+                None => name_text_of(&texts[name_page]),
+            };
+            let (result, _) = evaluate(dir, name_page, check_page, name_text, Some(Ok(&both)));
+            // Only a complete RIB is kept: a stray digit read differently could otherwise
+            // raise a tier by chance.
+            if result.status > best.status && matched_digits(dir, &result) == rib::RIB_LEN {
+                best = DocResult {
+                    rotation: best.rotation.take(),
+                    ..result
+                };
+            }
         }
     }
 

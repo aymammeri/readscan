@@ -128,6 +128,15 @@ pub fn load(path: &Path) -> Result<Directory> {
 
     for e in entries
         .iter()
+        .filter(|e| e.rib_digits.len() == rib::RIB_LEN && !rib::key_ok(&e.rib_digits))
+    {
+        eprintln!(
+            "Warning: row {} ({}): RIB \"{}\" has a wrong key (last 2 digits). Check it.",
+            e.row, e.full_name, e.rib
+        );
+    }
+    for e in entries
+        .iter()
         .filter(|e| e.rib_digits.len() != rib::RIB_LEN)
     {
         if e.rib_digits.is_empty() {

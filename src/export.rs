@@ -11,12 +11,12 @@ use crate::rib::Mark;
 /// Results sheet columns: header and width.
 const RESULT_COLUMNS: [(&str, f64); 7] = [
     ("Pages", 9.0),
-    ("Case number", 18.0),
     ("Result", 12.0),
     ("Scan details", 70.0),
     ("Scan RIB read", 24.0),
     ("RIB", 28.0),
     ("Full name", 28.0),
+    ("Case number", 19.0),
 ];
 const RESULTS_SHEET: &str = "Results";
 const SUMMARY_SHEET: &str = "Summary";
@@ -88,26 +88,26 @@ fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
         out.colored_row(
             &[
                 &r.pages,
-                &r.case,
                 r.status.label(),
                 &detail,
                 read,
                 &r.rib,
                 &r.full_name,
+                &r.case,
             ],
             r.status,
         );
         if r.case == CASE_NOT_READ {
-            let style = out.sheet.style_mut((2, row));
+            let style = out.sheet.style_mut((7, row));
             style.set_background_color(Status::Mismatch.fill_argb());
             style.font_mut().set_bold(true);
         }
         if let (Some(aligned), Some(marks)) = (&r.aligned, &marks) {
             out.sheet
-                .cell_mut((5, row))
+                .cell_mut((4, row))
                 .set_rich_text(marked(aligned, marks));
             out.sheet
-                .cell_mut((6, row))
+                .cell_mut((5, row))
                 .set_rich_text(marked_in_place(&r.rib, marks));
         }
     }
