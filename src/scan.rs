@@ -35,6 +35,8 @@ pub struct PageText {
     pub tilt: f32,
     /// Most text lines run top to bottom: the page lies on its side.
     pub sideways: bool,
+    /// Text of the top half only: where the name on a QUITTANCE is looked for.
+    pub top: String,
 }
 
 /// Renders PDF pages and runs OCR on them. Shared by reference across worker threads.
@@ -104,11 +106,13 @@ impl Scanner {
                 ys / (line.len().max(1) as f32) < mid
             });
         let mut segments = self.recognize(&input, &top)?;
-        if !matcher::has_title(&join_rows(&segments)) {
+        let top = join_rows(&segments);
+        if !matcher::has_title(&top) {
             segments.extend(self.recognize(&input, &bottom)?);
         }
         Ok(PageText {
             text: join_rows(&segments),
+            top,
             tilt: tilt(&boxes),
             sideways: sideways(&boxes),
         })

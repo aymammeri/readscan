@@ -3,18 +3,20 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use umya_spreadsheet::{RichText, TextElement, Workbook, Worksheet, writer};
 
-use crate::report::{DocResult, ResultRow, Status, count, describe_marks, page_issues};
+use crate::report::{
+    CASE_NOT_READ, DocResult, ResultRow, Status, count, describe_marks, page_issues,
+};
 use crate::rib::Mark;
 
 /// Results sheet columns: header and width.
 const RESULT_COLUMNS: [(&str, f64); 7] = [
     ("Pages", 9.0),
+    ("Case number", 18.0),
     ("Result", 12.0),
     ("Scan details", 70.0),
     ("Scan RIB read", 24.0),
     ("RIB", 28.0),
     ("Full name", 28.0),
-    ("Case number", 20.0),
 ];
 const RESULTS_SHEET: &str = "Results";
 const SUMMARY_SHEET: &str = "Summary";
@@ -84,21 +86,26 @@ fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
         out.colored_row(
             &[
                 &r.pages,
+                &r.case,
                 r.status.label(),
                 &detail,
                 read,
                 &r.rib,
                 &r.full_name,
-                &r.case,
             ],
             r.status,
         );
+        if r.case == CASE_NOT_READ {
+            let style = out.sheet.style_mut((2, row));
+            style.set_background_color(Status::Mismatch.fill_argb());
+            style.font_mut().set_bold(true);
+        }
         if let (Some(aligned), Some(marks)) = (&r.aligned, &marks) {
             out.sheet
-                .cell_mut((4, row))
+                .cell_mut((5, row))
                 .set_rich_text(marked(aligned, marks));
             out.sheet
-                .cell_mut((5, row))
+                .cell_mut((6, row))
                 .set_rich_text(marked_in_place(&r.rib, marks));
         }
     }
@@ -214,6 +221,19 @@ fn write_summary(sheet: &mut Worksheet, rows: &[ResultRow], docs: &[DocResult], 
             .set_rich_text(marked(sample, &[mark]));
     }
     out.skip();
+
+    let no_case = rows.iter().filter(|r| r.case == CASE_NOT_READ).count();
+    if no_case > 0 {
+        out.colored_row(
+            &[
+                "Case number",
+                &no_case.to_string(),
+                "Case number not read. Check it on the QUITTANCE.",
+            ],
+            Status::Mismatch,
+        );
+        out.skip();
+    }
 
     let unknown = docs.iter().filter(|d| d.person.is_none()).count();
     if unknown > 0 {

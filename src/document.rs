@@ -8,7 +8,6 @@ use crate::report::{DocResult, Status};
 use crate::rib::{self, RibMatch};
 use crate::scan::{PageText, Scanner, Turn};
 use crate::sheet::Directory;
-use crate::text::normalize_name;
 
 /// Text shorter than this (in letters/digits) means OCR got nothing usable from the page.
 const MIN_READABLE_CHARS: usize = 3;
@@ -46,6 +45,13 @@ pub fn process_document(
             .ok()
             .and_then(|t| matcher::case_number(&t.text));
     }
+    if result.case.is_none() {
+        result.detail = format!(
+            "Page {}: case number not read. Check it. {}",
+            name_page + 1,
+            result.detail
+        );
+    }
     result
 }
 
@@ -82,7 +88,7 @@ fn check_document(
         dir,
         name_page,
         check_page,
-        text_of(&texts[name_page]),
+        name_text_of(&texts[name_page]),
         check_page.map(|c| text_of(&texts[c])),
     );
     if best.status == Status::Match {
@@ -118,9 +124,9 @@ fn check_document(
                 continue;
             };
             let name_text = match &fixed_name {
-                _ if page == name_page => Ok(read.text.as_str()),
+                _ if page == name_page => Ok(read.top.as_str()),
                 Some(t) => Ok(t.as_str()),
-                None => text_of(&texts[name_page]),
+                None => name_text_of(&texts[name_page]),
             };
             let check_text = match (&fixed_check, check_page) {
                 _ if Some(page) == check_page => Some(Ok(read.text.as_str())),
@@ -133,7 +139,7 @@ fn check_document(
                 turned.push((page, turn));
                 if page == name_page {
                     best.case = matcher::case_number(&read.text);
-                    fixed_name = Some(read.text);
+                    fixed_name = Some(read.top);
                 } else {
                     fixed_check = Some(read.text);
                 }
@@ -232,6 +238,15 @@ fn rotation_of(page: usize, turn: Option<Turn>, scanned: Option<&PageText>) -> O
     }
 }
 
+/// The name page's text where names are looked for: its top half.
+fn name_text_of(page: &Result<PageText>) -> Result<&str, String> {
+    match page {
+        Ok(p) if is_readable(&p.top) => Ok(&p.top),
+        Ok(_) => Err("unreadable".to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn text_of(page: &Result<PageText>) -> Result<&str, String> {
     match page {
         Ok(p) if is_readable(&p.text) => Ok(&p.text),
@@ -266,7 +281,7 @@ fn evaluate(
     let check_ok = check.as_ref().and_then(|c| c.as_ref().ok().copied());
 
     let found = match name {
-        Ok(text) => matcher::find_person(dir, text),
+        Ok(text) => matcher::find_named(dir, text),
         Err(_) => NameMatch::NotFound,
     };
     let (person, name_note) = match found {
@@ -342,9 +357,9 @@ fn evaluate(
 
 /// The name line of a name page, shortened, to show what OCR read.
 fn name_excerpt(text: &str) -> String {
-    let line = text
-        .lines()
-        .find(|l| normalize_name(l).split(' ').any(|w| w == "NOM"))
+    let line = matcher::name_fields(text)
+        .into_iter()
+        .next()
         .or_else(|| {
             text.lines()
                 .find(|l| !matcher::has_title(l) && is_readable(l))

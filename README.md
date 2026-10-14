@@ -65,9 +65,12 @@ Pages pair as (1,2), (3,4), ... until a title page shows up where a check should
 Pairing then resumes at the next title page. A name page whose title OCR misses never shifts the
 pairing. Every issue is listed with its pages in the terminal and on the `Summary` sheet.
 
-**4. Who the document is for.** The name page is looked up in the spreadsheet (accents, word order
-and small OCR typos tolerated). If the page is unreadable, or the name matches nobody or several
-people, the check's RIB decides when all 20 digits, or at least 15, match one of them. Such a
+**4. Who the document is for.** The name is read only from the name fields in the top half of
+the QUITTANCE: **Bénéficiaire de l'indemnité** first, then **Assuré** when the Bénéficiaire names
+nobody in the spreadsheet. Other names on the page (Par, signatures, the text below) are never
+used. Accents, word order and small OCR typos are tolerated; OCR reads accented letters as `?`,
+which counts as an `E` ("B?n?ficiaire"). If the page is unreadable, or the name matches nobody or several
+people, or neither field was read, the check's RIB decides when all 20 digits, or at least 15, match one of them. Such a
 document is never better than STRONG ("Check the name."). Otherwise it is UNREADABLE.
 
 **5. The RIB on the check**, against that person's RIBs only:
@@ -99,7 +102,10 @@ A turn is kept only for a full match, a found name, or 10+ matching digits. Then
 and the page is flagged ("Page 2 upside down. Read turned. Rescan it."). If the document still
 fails on a rotated or tilted page, it is **ROTATED** ("Page 8 tilted 45°. Rescan it.").
 
-**7. Duplicates.** Each QUITTANCE has a case number ("Dossier Sinistre 2605-2026-110201"). A
+**7. Case number and duplicates.** Each QUITTANCE has a case number ("N° Dossier Sinistre
+2610 - 2026 - 110307"); it is mandatory. When it can't be read, the `Case number` cell says
+**NOT READ** in red, the details say "case number not read. Check it.", and the page goes into the
+checked PDF even if the RIB matched. A
 document with the same full name and case number as an earlier one is a **DUPLICATE**. The same
 name with another case number is a separate case. A case number that can't be read never makes a
 duplicate.
@@ -132,14 +138,15 @@ Results go to a new file next to the spreadsheet, `<name>_results.xlsx`; the spr
 is never changed. A re-run replaces that file (if it is open in Excel, a time-stamped copy is
 written instead).
 
-- `Results` sheet, in PDF page order: `Pages`, `Result`, `Scan details`, `Scan RIB read`, `RIB`,
-  `Full name`, `Case number`, each line colored by its result
+- `Results` sheet, in PDF page order: `Pages`, `Case number`, `Result`, `Scan details`,
+  `Scan RIB read`, `RIB`, `Full name`, each line colored by its result
 - `Summary` sheet: run info, totals per result, page issues, digit colors
 
 A copy of the PDF, `<name>_checked.pdf`, is written next to it. Every document that is not a
-full MATCH gets a banner above its check page (or its QUITTANCE when the check is missing), in
-the result's color: the result and what to do, the case number, the spreadsheet RIB, the digits
-read on the check right below it, and `^` under each digit that differs. The page is made taller
+full MATCH, or has no case number, gets a banner above its check page (or its QUITTANCE when the check is missing), in
+the result's color, in text sized to fill the page width: the result and what to do, the case
+number, the name and row, the spreadsheet RIB, the digits read on the check right below it, and
+`^` under each digit that differs. The page is made taller
 for the banner, so nothing on the scan is covered. The original PDF is never changed.
 
 The spreadsheet's first sheet is used. Columns are found by header (`name`/`nom`, `rib`/`rip`);

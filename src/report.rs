@@ -184,8 +184,12 @@ pub struct ResultRow {
     pub rib: String,
     pub rib_digits: String,
     pub full_name: String,
+    /// Case number, `CASE_NOT_READ` when a QUITTANCE was scanned but its number not read.
     pub case: String,
 }
+
+/// Case number cell of a document whose QUITTANCE number could not be read.
+pub const CASE_NOT_READ: &str = "NOT READ";
 
 impl ResultRow {
     pub fn marks(&self) -> Option<Vec<Mark>> {
@@ -271,7 +275,12 @@ fn doc_row(dir: &Directory, d: &DocResult) -> ResultRow {
         pages: d.pages.clone(),
         status: d.status,
         detail: d.detail.clone(),
-        case: d.case.clone().unwrap_or_default(),
+        // Only a page set aside has no QUITTANCE to read a case number from.
+        case: match &d.case {
+            Some(case) => case.clone(),
+            None if d.status == Status::Order => String::new(),
+            None => CASE_NOT_READ.to_string(),
+        },
         aligned,
         read: d.rib_read.clone(),
         rib,
@@ -330,7 +339,8 @@ fn paint_marks(aligned: &str, marks: &[Mark]) -> String {
         .collect()
 }
 
-/// The results as in the results file: pages, result, details, RIB read, RIB, full name.
+/// The results as in the results file: pages, case number, result, details, RIB read, RIB,
+/// full name.
 pub fn print_results(rows: &[ResultRow], docs: &[DocResult]) {
     println!("{}", "Results (PDF page order)".bold());
     for r in rows {
@@ -338,10 +348,17 @@ pub fn print_results(rows: &[ResultRow], docs: &[DocResult]) {
             (Some(aligned), Some(marks)) => paint_marks(aligned, &marks),
             _ => format!("{:<20}", r.read.chars().take(20).collect::<String>()),
         };
-        let head = format!("  {:<7} {:<11}", r.pages, r.status.label());
+        let case = if r.case == CASE_NOT_READ {
+            r.case.red().bold().to_string()
+        } else {
+            r.case.clone()
+        };
+        let head = format!("  {:<7} ", r.pages);
+        let status = format!(" {:<11}", r.status.label());
         println!(
-            "{} {} {read} {}",
+            "{}{case:<16}{} {} {read} {}",
             r.status.paint(&head),
+            r.status.paint(&status),
             r.detail,
             r.status.paint(&format!("{} | {}", r.rib, r.full_name))
         );

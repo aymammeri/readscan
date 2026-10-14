@@ -16,9 +16,9 @@ use crate::sheet::Directory;
 const FONT: &str = "ReadscanMono";
 /// Courier glyphs are 0.6 em wide.
 const CHAR_WIDTH: f32 = 0.6;
-/// Characters per banner line on a page of any width.
-const LINE_CHARS: usize = 95;
-const MAX_FONT_SIZE: f32 = 10.0;
+/// The font is sized so the longest banner line fills the page width, but never smaller than
+/// for lines this long. Longer lines (the details) are wrapped.
+const MIN_LINE_CHARS: usize = 50;
 const LEADING: f32 = 1.3;
 /// Blank space around the banner text, in font sizes.
 const PADDING: f32 = 0.8;
@@ -33,10 +33,11 @@ pub struct Note {
     lines: Vec<String>,
 }
 
-/// One banner per document that is not a full MATCH, on its check page (else its QUITTANCE).
+/// One banner per document that is not a full MATCH or has no case number, on its check page
+/// (else its QUITTANCE).
 pub fn notes(dir: &Directory, docs: &[DocResult]) -> Vec<Note> {
     docs.iter()
-        .filter(|d| d.status != Status::Match)
+        .filter(|d| d.status != Status::Match || d.case.is_none())
         .map(|d| Note {
             page: d.page,
             status: d.status,
@@ -46,20 +47,17 @@ pub fn notes(dir: &Directory, docs: &[DocResult]) -> Vec<Note> {
 }
 
 fn note_lines(dir: &Directory, d: &DocResult) -> Vec<String> {
-    let mut lines = vec![format!(
-        "readscan: {}, {} {}. {}",
-        d.status.label(),
-        if d.pages.contains('-') {
-            "pages"
-        } else {
-            "page"
-        },
-        d.pages,
-        d.detail
-    )];
-    if let Some(case) = &d.case {
-        lines.push(format!("{:<LABEL_WIDTH$}{case}", "Case number:"));
-    }
+    let pages = if d.pages.contains('-') {
+        "pages"
+    } else {
+        "page"
+    };
+    let case = d.case.as_deref().unwrap_or("NOT READ, check it");
+    let mut lines = vec![
+        format!("readscan: {}, {pages} {}", d.status.label(), d.pages),
+        d.detail.clone(),
+        format!("{:<LABEL_WIDTH$}{case}", "Case number:"),
+    ];
     let shown: Vec<usize> = match (
         d.matched_entry.or(d.reading.as_ref().map(|r| r.entry)),
         d.person,
@@ -79,9 +77,10 @@ fn note_lines(dir: &Directory, d: &DocResult) -> Vec<String> {
             &entry.rib_digits
         };
         lines.push(format!(
-            "{:<LABEL_WIDTH$}{rib}   {}, row {}",
-            "Spreadsheet RIB:", entry.full_name, entry.row
+            "{:<LABEL_WIDTH$}{}, row {}",
+            "Name:", entry.full_name, entry.row
         ));
+        lines.push(format!("{:<LABEL_WIDTH$}{rib}", "Spreadsheet RIB:"));
         let Some(reading) = d.reading.as_ref().filter(|r| r.entry == e) else {
             continue;
         };
@@ -136,10 +135,15 @@ fn add_banner(doc: &mut Document, page: ObjectId, font: ObjectId, note: &Note) -
     // Size of the page as shown, after its /Rotate.
     let (shown_w, shown_h) = if rotate % 180 == 0 { (w, h) } else { (h, w) };
 
-    let size = (shown_w / (CHAR_WIDTH * LINE_CHARS as f32)).min(MAX_FONT_SIZE);
-    let chars = ((shown_w / (CHAR_WIDTH * size)) as usize)
-        .saturating_sub(2)
-        .max(20);
+    // Size the font on the fixed lines (labels and RIBs); the details line wraps to fit.
+    let longest = note.lines[2..]
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(MIN_LINE_CHARS);
+    let size = shown_w / (CHAR_WIDTH * (longest as f32 + 2.0 * PADDING / CHAR_WIDTH));
+    let chars = longest.max(20);
     let lines: Vec<String> = note.lines.iter().flat_map(|l| wrap(l, chars)).collect();
     let banner = (lines.len() as f32 * LEADING + 2.0 * PADDING) * size;
 
