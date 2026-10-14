@@ -32,12 +32,11 @@ and many documents are processed concurrently on every logical CPU of the machin
 ## Download
 
 Ready-to-run programs are on the [Releases](https://github.com/aymammeri/readscan/releases) page,
-one file per system, with the OCR models built in:
+one standalone file per machine, with the OCR models built in:
 
 - Windows: `readscan-windows-x64.exe`, double-click it (SmartScreen: *More info* > *Run anyway*).
-- macOS (Apple Silicon and Intel): `readscan-macos-universal`; once, run
-  `chmod +x readscan-macos-universal && xattr -d com.apple.quarantine readscan-macos-universal`,
-  then `./readscan-macos-universal`.
+- Mac with Apple Silicon: `readscan-macos-apple-silicon`; Mac with Intel: `readscan-macos-intel`.
+  Once: `chmod +x readscan-macos-* && xattr -d com.apple.quarantine readscan-macos-*`, then run it.
 
 Pushing a `v*` tag builds both and publishes the release.
 

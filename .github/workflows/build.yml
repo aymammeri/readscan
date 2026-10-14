@@ -15,16 +15,23 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            target: x86_64-pc-windows-msvc
             asset: readscan-windows-x64.exe
           - os: macos-latest
-            asset: readscan-macos-universal
+            target: aarch64-apple-darwin
+            asset: readscan-macos-apple-silicon
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: readscan-macos-intel
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Download OCR models (built into the program)
         shell: bash
@@ -33,23 +40,16 @@ jobs:
           curl -sSfL https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.rten -o models/text-detection.rten
           curl -sSfL https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.rten -o models/text-recognition.rten
 
-      - run: cargo test --release
+      - name: Test
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: cargo test --release
 
-      - name: Build (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Build
         shell: bash
         run: |
-          cargo build --release
-          cp target/release/readscan.exe ${{ matrix.asset }}
-
-      - name: Build (macOS, Apple Silicon + Intel in one binary)
-        if: matrix.os == 'macos-latest'
-        run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
-          lipo -create -output ${{ matrix.asset }} \
-            target/aarch64-apple-darwin/release/readscan \
-            target/x86_64-apple-darwin/release/readscan
+          cargo build --release --target ${{ matrix.target }}
+          ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
+          cp "target/${{ matrix.target }}/release/readscan$ext" ${{ matrix.asset }}
           chmod +x ${{ matrix.asset }}
 
       - uses: actions/upload-artifact@v4
