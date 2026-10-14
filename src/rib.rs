@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use crate::sheet::Directory;
 
 pub const RIB_LEN: usize = 20;
-/// WEAK: at least this many digits match, at any position.
+/// WEAK: at least this many digits match. Fewer can be chance.
 const WEAK_MIN_DIGITS: usize = 4;
-/// PARTIAL: at least this many last digits match, in a row from the end.
-const PARTIAL_MIN_LAST: usize = 7;
-/// STRONG: at least this many first or last digits match, in a row from that end.
-const STRONG_MIN_END: usize = 11;
+/// PARTIAL: at least this many digits match.
+const PARTIAL_MIN_DIGITS: usize = 6;
+/// STRONG: at least this many digits match.
+const STRONG_MIN_DIGITS: usize = 11;
 
 /// How much of a RIB was confirmed when not all 20 digits were.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -47,16 +47,13 @@ impl Agreement {
         }
     }
 
-    /// Highest tier reached, checked from the strongest down.
+    /// Tier by the count of matching digits, wherever they are.
     pub fn tier(self) -> Option<Tier> {
-        if self.first >= STRONG_MIN_END || self.last >= STRONG_MIN_END {
-            Some(Tier::Strong)
-        } else if self.last >= PARTIAL_MIN_LAST {
-            Some(Tier::Partial)
-        } else if self.matched >= WEAK_MIN_DIGITS {
-            Some(Tier::Weak)
-        } else {
-            None
+        match self.matched {
+            m if m >= STRONG_MIN_DIGITS => Some(Tier::Strong),
+            m if m >= PARTIAL_MIN_DIGITS => Some(Tier::Partial),
+            m if m >= WEAK_MIN_DIGITS => Some(Tier::Weak),
+            _ => None,
         }
     }
 }
@@ -244,8 +241,8 @@ pub fn score(expected: &str, aligned: &str) -> Vec<Mark> {
 /// 2. MATCH: all 20 digits of a RIB, in one piece, in the pieces of a row joined, or over two
 ///    consecutive rows joined.
 /// 3. Otherwise each row's pieces are laid on each RIB where they share the longest run of
-///    digits, and the best reading gets the highest tier it reaches:
-///    STRONG 11+ first or last digits, PARTIAL 7+ last digits, WEAK 4+ digits anywhere.
+///    digits, and the best reading gets a tier by its matching digits, wherever they are:
+///    STRONG 11 to 19, PARTIAL 6 to 10, WEAK 4 or 5.
 /// 4. MISMATCH: otherwise, a clean 20-digit number was read and it is not the RIB.
 /// 5. UNREADABLE: otherwise; whatever digits were read are listed for a manual check.
 pub fn check(dir: &Directory, entry_ids: &[usize], ocr_text: &str) -> RibCheck {
@@ -547,13 +544,13 @@ mod tests {
     }
 
     #[test]
-    fn tiers_from_strongest_down() {
+    fn tiers_by_matching_digits() {
         // RIB_A = 00100123012345678912
-        assert_eq!(tier("00100123012 ##"), Some(Tier::Strong), "first 11");
+        assert_eq!(tier("00100123012 ##"), Some(Tier::Strong), "11");
         assert_eq!(tier("## 12345678912"), Some(Tier::Strong), "last 11");
-        assert_eq!(tier("## 5678912"), Some(Tier::Partial), "last 7");
-        assert_eq!(tier("0010012301 ##"), Some(Tier::Weak), "first 10 only");
-        assert_eq!(tier("## 678912"), Some(Tier::Weak), "last 6 only");
+        assert_eq!(tier("0010012301 ##"), Some(Tier::Partial), "10");
+        assert_eq!(tier("## 678912"), Some(Tier::Partial), "6");
+        assert_eq!(tier("## 78912"), Some(Tier::Weak), "5");
         assert_eq!(tier("## 3456 ##"), Some(Tier::Weak), "4 in the middle");
         assert_eq!(tier("RIB 0014 ###"), None, "3 digits");
     }

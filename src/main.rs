@@ -1,3 +1,4 @@
+mod annotate;
 mod document;
 mod export;
 mod matcher;
@@ -118,6 +119,8 @@ fn run(threads: usize) -> Result<()> {
             .collect()
     });
 
+    let mut results = results;
+    document::flag_duplicates(&mut results);
     let seconds = started.elapsed().as_secs_f32();
     println!("\nFinished in {seconds:.1}s.\n");
     let rows = report::result_rows(&dir, &results);
@@ -138,6 +141,15 @@ fn run(threads: usize) -> Result<()> {
     );
     if let Some(note) = saved.note {
         println!("  {note}");
+    }
+    match annotate::write_checked_pdf(&pdf_path, &annotate::notes(&dir, &results)) {
+        Ok(Some(path)) => println!(
+            "{} Pages to check, with the spreadsheet RIB on top: {}",
+            "i".cyan().bold(),
+            path.display()
+        ),
+        Ok(None) => {}
+        Err(e) => eprintln!("{} Checked PDF not written: {e}", "!".yellow().bold()),
     }
     Ok(())
 }

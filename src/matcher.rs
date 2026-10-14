@@ -36,6 +36,39 @@ pub fn looks_like_check(ocr_text: &str) -> bool {
     })
 }
 
+/// Digit groups of a case number, as printed: "2605-2026-110201".
+const CASE_GROUPS: [usize; 3] = [4, 4, 6];
+/// Words before the case number on a QUITTANCE ("Dossier Sinistre").
+const CASE_WORDS: [&str; 2] = ["DOSSIER", "SINISTRE"];
+
+/// Case number of a QUITTANCE, as "2605-2026-110201": three digit groups of 4, 4 and 6 on
+/// one line, or 14 digits on the "Dossier Sinistre" line when OCR lost a separator.
+pub fn case_number(ocr_text: &str) -> Option<String> {
+    let format = |digits: &str| format!("{}-{}-{}", &digits[..4], &digits[4..8], &digits[8..]);
+    let lines = || ocr_text.lines();
+    let grouped = lines().find_map(|line| {
+        let groups: Vec<&str> = line
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|g| !g.is_empty())
+            .collect();
+        groups
+            .windows(3)
+            .find(|w| w.iter().map(|g| g.len()).eq(CASE_GROUPS))
+            .map(|w| w.join("-"))
+    });
+    grouped.or_else(|| {
+        lines().find_map(|line| {
+            let labeled = normalize_name(line).split(' ').any(|w| {
+                CASE_WORDS
+                    .iter()
+                    .any(|word| normalized_levenshtein(word, w) >= WORD_SIMILARITY)
+            });
+            let digits: String = line.chars().filter(char::is_ascii_digit).collect();
+            (labeled && digits.len() == CASE_GROUPS.iter().sum::<usize>()).then(|| format(&digits))
+        })
+    })
+}
+
 pub enum NameMatch {
     Found(usize),
     Ambiguous(Vec<usize>),
@@ -112,6 +145,24 @@ mod tests {
     fn upright_check_words() {
         assert!(super::looks_like_check("Payez contre ce chèque"));
         assert!(!super::looks_like_check("ənbəɥɔ əɔ ǝɹʇuoɔ zəʎɐd"));
+    }
+
+    #[test]
+    fn case_number_from_noisy_ocr() {
+        use super::case_number;
+        assert_eq!(
+            case_number("Nom : X\nDossie? Sinis:a 2605-2026-110201").as_deref(),
+            Some("2605-2026-110201")
+        );
+        assert_eq!(
+            case_number("Dossier Sinistre : 2605 2026 110201").as_deref(),
+            Some("2605-2026-110201")
+        );
+        assert_eq!(
+            case_number("Dossier Sinistre 26052026-110201").as_deref(),
+            Some("2605-2026-110201")
+        );
+        assert_eq!(case_number("Date 26-05-2026\nMontant 25 000 DA"), None);
     }
 
     #[test]

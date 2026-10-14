@@ -6,8 +6,11 @@ use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
-use ocrs::{ImageSource, OcrEngine, OcrEngineParams, TextItem, TextLine};
+use ocrs::{ImageSource, OcrEngine, OcrEngineParams, TextItem};
+
+use crate::matcher;
 use rten::Model;
+use rten_imageproc::RotatedRect;
 
 /// 150 DPI is ~44% fewer pixels than 200 and still enough for printed text.
 /// Raise it if RIB digits on real checks start being misread.
@@ -83,23 +86,70 @@ impl Scanner {
         let source = ImageSource::from_bytes(&pixels, (width as u32, height as u32))?;
         let input = self.engine.prepare_input(source)?;
         let words = self.engine.detect_words(&input)?;
-        let boxes: Vec<(f32, f32, f32, f32)> = words
+        let boxes: Vec<WordBox> = words
             .iter()
             .map(|w| (w.up_axis().x, w.up_axis().y, w.width(), w.height()))
             .collect();
-        let lines = self.engine.find_text_lines(&input, &words);
-        let lines: Vec<TextLine> = self
+
+        // The top half holds everything needed on a QUITTANCE (title, name, case number), so
+        // lines in the bottom half are only recognized when the title isn't there: check
+        // pages, turned pages. Detection always covers the whole page (its cost is fixed).
+        let mid = (height / 2) as f32;
+        let (top, bottom): (Vec<_>, Vec<_>) = self
             .engine
-            .recognize_text(&input, &lines)?
+            .find_text_lines(&input, &words)
             .into_iter()
-            .flatten()
-            .collect();
+            .partition(|line| {
+                let ys: f32 = line.iter().map(|w| w.center().y).sum();
+                ys / (line.len().max(1) as f32) < mid
+            });
+        let mut segments = self.recognize(&input, &top)?;
+        if !matcher::has_title(&join_rows(&segments)) {
+            segments.extend(self.recognize(&input, &bottom)?);
+        }
         Ok(PageText {
-            text: join_rows(lines.iter()),
+            text: join_rows(&segments),
             tilt: tilt(&boxes),
             sideways: sideways(&boxes),
         })
     }
+
+    fn recognize(
+        &self,
+        input: &ocrs::OcrInput,
+        lines: &[Vec<RotatedRect>],
+    ) -> Result<Vec<Segment>> {
+        if lines.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .engine
+            .recognize_text(input, lines)?
+            .into_iter()
+            .flatten()
+            .map(|line| {
+                let rect = line.bounding_rect();
+                Segment {
+                    top: rect.top(),
+                    bottom: rect.bottom(),
+                    left: rect.left(),
+                    text: line.to_string(),
+                }
+            })
+            .filter(|s| !s.text.trim().is_empty())
+            .collect())
+    }
+}
+
+/// Up axis x and y, width and height of a detected word.
+type WordBox = (f32, f32, f32, f32);
+
+/// One recognized line and where it sits on the page.
+struct Segment {
+    top: i32,
+    bottom: i32,
+    left: i32,
+    text: String,
 }
 
 /// Rotate an RGBA image clockwise by `turn`.
@@ -130,7 +180,7 @@ fn turned(rgba: &[u8], width: usize, height: usize, turn: Turn) -> (Vec<u8>, usi
 
 /// Direction the text of a word box runs in, from its long side, for boxes clearly longer
 /// than tall. Works even when the words can't be recognized.
-fn text_directions(boxes: &[(f32, f32, f32, f32)]) -> impl Iterator<Item = (f32, f32)> + '_ {
+fn text_directions(boxes: &[WordBox]) -> impl Iterator<Item = (f32, f32)> + '_ {
     boxes
         .iter()
         .filter(|(_, _, w, h)| w.max(*h) >= 2.0 * w.min(*h))
@@ -139,7 +189,7 @@ fn text_directions(boxes: &[(f32, f32, f32, f32)]) -> impl Iterator<Item = (f32,
 
 /// Median slant of the words, in degrees (0 to 45). A quarter turn reads as 0; `sideways`
 /// catches that.
-fn tilt(boxes: &[(f32, f32, f32, f32)]) -> f32 {
+fn tilt(boxes: &[WordBox]) -> f32 {
     let mut angles: Vec<f32> = text_directions(boxes)
         .map(|(dx, dy)| {
             let a = dy.atan2(dx).to_degrees().abs() % 90.0;
@@ -154,7 +204,7 @@ fn tilt(boxes: &[(f32, f32, f32, f32)]) -> f32 {
 }
 
 /// Most words run top to bottom: the page lies on its side.
-fn sideways(boxes: &[(f32, f32, f32, f32)]) -> bool {
+fn sideways(boxes: &[WordBox]) -> bool {
     let (vertical, total) = text_directions(boxes).fold((0, 0), |(v, t), (dx, dy)| {
         (v + usize::from(dy.abs() > dx.abs()), t + 1)
     });
@@ -164,28 +214,11 @@ fn sideways(boxes: &[(f32, f32, f32, f32)]) -> bool {
 /// OCR splits a row into several lines when the print has big gaps (a RIB printed in segments).
 /// Lines that overlap vertically are put back on one row, left to right, with a wide gap
 /// between them so the segments stay visible.
-fn join_rows<'a>(lines: impl Iterator<Item = &'a TextLine>) -> String {
-    struct Segment {
-        top: i32,
-        bottom: i32,
-        left: i32,
-        text: String,
-    }
-    let mut segments: Vec<Segment> = lines
-        .map(|line| {
-            let rect = line.bounding_rect();
-            Segment {
-                top: rect.top(),
-                bottom: rect.bottom(),
-                left: rect.left(),
-                text: line.to_string(),
-            }
-        })
-        .filter(|s| !s.text.trim().is_empty())
-        .collect();
+fn join_rows(segments: &[Segment]) -> String {
+    let mut segments: Vec<&Segment> = segments.iter().collect();
     segments.sort_by_key(|s| s.top);
 
-    let mut rows: Vec<Vec<Segment>> = Vec::new();
+    let mut rows: Vec<Vec<&Segment>> = Vec::new();
     for segment in segments {
         let same_row = rows.last().is_some_and(|row| {
             let top = row.iter().map(|s| s.top).min().unwrap_or(0);
@@ -204,7 +237,7 @@ fn join_rows<'a>(lines: impl Iterator<Item = &'a TextLine>) -> String {
         .map(|mut row| {
             row.sort_by_key(|s| s.left);
             row.into_iter()
-                .map(|s| s.text)
+                .map(|s| s.text.as_str())
                 .collect::<Vec<_>>()
                 .join(SEGMENT_GAP)
         })

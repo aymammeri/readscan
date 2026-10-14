@@ -112,9 +112,9 @@ pub fn load(path: &Path) -> Result<Directory> {
         .skip(skip)
         .filter_map(|(i, row)| {
             let full_name = row.get(name_col)?.trim().to_string();
-            let rib = row.get(rib_col)?.trim().to_string();
+            let rib = row.get(rib_col).map_or("", |r| r.trim()).to_string();
             let rib_digits = rib::from_sheet(&rib);
-            if full_name.is_empty() || rib_digits.is_empty() {
+            if full_name.is_empty() {
                 return None;
             }
             Some(Entry {
@@ -130,6 +130,13 @@ pub fn load(path: &Path) -> Result<Directory> {
         .iter()
         .filter(|e| e.rib_digits.len() != rib::RIB_LEN)
     {
+        if e.rib_digits.is_empty() {
+            eprintln!(
+                "Warning: row {} ({}): no RIB. Add it in the spreadsheet.",
+                e.row, e.full_name
+            );
+            continue;
+        }
         eprintln!(
             "Warning: row {} ({}): RIB \"{}\" has {} digits, not {}. Fix it in the spreadsheet.",
             e.row,
@@ -141,7 +148,7 @@ pub fn load(path: &Path) -> Result<Directory> {
     }
 
     if entries.is_empty() {
-        bail!("no rows with both a full name and a RIB were found");
+        bail!("no rows with a full name were found");
     }
     Ok(Directory::new(entries))
 }

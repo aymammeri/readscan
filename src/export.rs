@@ -7,13 +7,14 @@ use crate::report::{DocResult, ResultRow, Status, count, describe_marks, page_is
 use crate::rib::Mark;
 
 /// Results sheet columns: header and width.
-const RESULT_COLUMNS: [(&str, f64); 6] = [
+const RESULT_COLUMNS: [(&str, f64); 7] = [
     ("Pages", 9.0),
     ("Result", 12.0),
     ("Scan details", 70.0),
     ("Scan RIB read", 24.0),
     ("RIB", 28.0),
     ("Full name", 28.0),
+    ("Case number", 20.0),
 ];
 const RESULTS_SHEET: &str = "Results";
 const SUMMARY_SHEET: &str = "Summary";
@@ -73,7 +74,7 @@ fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
     for r in rows {
         let marks = r.marks();
         let detail = match &marks {
-            Some(marks) if r.status != Status::Green => {
+            Some(marks) if r.status != Status::Match => {
                 format!("{} Digits: {}.", r.detail, describe_marks(marks))
             }
             _ => r.detail.clone(),
@@ -88,6 +89,7 @@ fn write_rows(sheet: &mut Worksheet, rows: &[ResultRow]) {
                 read,
                 &r.rib,
                 &r.full_name,
+                &r.case,
             ],
             r.status,
         );

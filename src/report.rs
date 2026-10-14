@@ -3,35 +3,44 @@ use colored::Colorize;
 use crate::rib::{self, Mark, Reading, Tier};
 use crate::sheet::Directory;
 
-/// Ordered from worst to best, so `max` picks the best outcome.
+/// Ordered from worst to best, so comparing results picks the better one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Status {
     NotScanned,
-    Yellow,
-    /// Pages out of physical order; the document could not be completed.
+    /// Same full name and case number as an earlier document.
+    Duplicate,
+    /// A QUITTANCE with no check page after it.
+    NoCheck,
+    /// A page that fits no document.
     Order,
+    /// No RIB on the check, or none in the spreadsheet.
+    MissingRib,
+    Unreadable,
     /// A page is upside down, on its side or too tilted to match.
     Rotated,
-    Red,
-    /// 4+ RIB digits match, anywhere.
+    Mismatch,
+    /// 4 or 5 RIB digits match.
     Weak,
-    /// 7+ last RIB digits match.
+    /// 6 to 10 RIB digits match.
     Partial,
-    /// 11+ first or last RIB digits match.
+    /// 11 to 19 RIB digits match.
     Strong,
-    Green,
+    Match,
 }
 
 impl Status {
-    pub const ALL: [Status; 9] = [
-        Status::Green,
+    pub const ALL: [Status; 12] = [
+        Status::Match,
         Status::Strong,
         Status::Partial,
         Status::Weak,
-        Status::Red,
+        Status::Mismatch,
+        Status::Duplicate,
+        Status::NoCheck,
+        Status::MissingRib,
+        Status::Unreadable,
         Status::Rotated,
         Status::Order,
-        Status::Yellow,
         Status::NotScanned,
     ];
 
@@ -42,7 +51,7 @@ impl Status {
 
     /// STRONG, PARTIAL or WEAK.
     pub fn is_tier(self) -> bool {
-        self.is_match() && self != Status::Green
+        self.is_match() && self != Status::Match
     }
 
     pub fn from_tier(tier: Tier) -> Self {
@@ -55,57 +64,69 @@ impl Status {
 
     pub fn label(self) -> &'static str {
         match self {
-            Status::Green => "MATCH",
+            Status::Match => "MATCH",
             Status::Strong => "STRONG",
             Status::Partial => "PARTIAL",
             Status::Weak => "WEAK",
-            Status::Red => "MISMATCH",
+            Status::Mismatch => "MISMATCH",
+            Status::Duplicate => "DUPLICATE",
+            Status::NoCheck => "NO CHECK",
+            Status::MissingRib => "MISSING RIB",
+            Status::Unreadable => "UNREADABLE",
             Status::Rotated => "ROTATED",
             Status::Order => "PAGE ORDER",
-            Status::Yellow => "UNREADABLE",
             Status::NotScanned => "NOT IN PDF",
         }
     }
 
-    /// Green to blue to pink as confidence drops, then Excel's bad / neutral fills.
+    /// Green, blue, yellow by confidence; red for everything that failed.
     pub fn fill_argb(self) -> &'static str {
         match self {
-            Status::Green => "FFC6EFCE",
-            Status::Strong => "FFE2EFDA",
-            Status::Partial => "FFDDEBF7",
-            Status::Weak => "FFFCE4EC",
-            Status::Red => "FFFFC7CE",
+            Status::Match => "FFC6EFCE",
+            Status::Strong => "FFBDD7EE",
+            Status::Partial => "FFFFEB9C",
+            Status::Weak
+            | Status::Mismatch
+            | Status::Duplicate
+            | Status::NoCheck
+            | Status::MissingRib
+            | Status::Unreadable => "FFFFC7CE",
             Status::Rotated => "FFE4DFEC",
             Status::Order => "FFF8CBAD",
-            Status::Yellow => "FFFFEB9C",
             Status::NotScanned => "FFD9D9D9",
         }
     }
 
     pub fn meaning(self) -> &'static str {
         match self {
-            Status::Green => "All 20 RIB digits match.",
-            Status::Strong => "11+ first or last RIB digits match. Check the rest by hand.",
-            Status::Partial => "7+ last RIB digits match. Check by hand.",
-            Status::Weak => "Only 4+ RIB digits match. Check by hand.",
-            Status::Red => "Wrong RIB on the check. Verify.",
+            Status::Match => "All 20 RIB digits match.",
+            Status::Strong => "11+ RIB digits match. Check the rest by hand.",
+            Status::Partial => "6 to 10 RIB digits match. Check by hand.",
+            Status::Weak => "Under 6 RIB digits match. Check by hand.",
+            Status::Mismatch => "Wrong RIB on the check. Verify.",
+            Status::Duplicate => "Same name and case number as an earlier document. Remove it.",
+            Status::NoCheck => "QUITTANCE without its check. Add the check.",
+            Status::MissingRib => "No RIB on the check or in the spreadsheet. Add it.",
+            Status::Unreadable => "Not readable. Check by hand.",
             Status::Rotated => "Page rotated or tilted. Rescan it.",
-            Status::Order => "Pages out of order. Fix and rescan.",
-            Status::Yellow => "Not readable. Check by hand.",
+            Status::Order => "Page fits no document. Fix the order.",
             Status::NotScanned => "No check scanned. Scan it.",
         }
     }
 
     fn paint(self, text: &str) -> colored::ColoredString {
         match self {
-            Status::Green => text.green(),
-            Status::Strong => text.bright_green(),
-            Status::Partial => text.cyan(),
-            Status::Weak => text.bright_magenta(),
-            Status::Red => text.red(),
+            Status::Match => text.green(),
+            Status::Strong => text.blue(),
+            Status::Partial => text.yellow(),
+            Status::Weak
+            | Status::Mismatch
+            | Status::Duplicate
+            | Status::NoCheck
+            | Status::MissingRib
+            | Status::Unreadable => text.red(),
             Status::Rotated => text.bright_blue(),
             Status::Order => text.magenta(),
-            Status::Yellow => text.yellow(),
             Status::NotScanned => text.dimmed(),
         }
     }
@@ -126,6 +147,10 @@ pub struct DocResult {
     pub order_issue: Option<String>,
     /// Set when a page of this document is upside down, on its side or tilted.
     pub rotation: Option<String>,
+    /// Case number on the QUITTANCE ("Dossier Sinistre 2605-2026-110201").
+    pub case: Option<String>,
+    /// Page (0-based) where the RIB to check is: the check, else the QUITTANCE.
+    pub page: usize,
 }
 
 impl DocResult {
@@ -134,12 +159,14 @@ impl DocResult {
             pages,
             person: None,
             matched_entry: None,
-            status: Status::Yellow,
+            status: Status::Unreadable,
             rib_read: String::new(),
             reading: None,
             detail: String::new(),
             order_issue: None,
             rotation: None,
+            case: None,
+            page: 0,
         }
     }
 }
@@ -157,6 +184,7 @@ pub struct ResultRow {
     pub rib: String,
     pub rib_digits: String,
     pub full_name: String,
+    pub case: String,
 }
 
 impl ResultRow {
@@ -169,7 +197,7 @@ impl ResultRow {
 
 /// Documents in PDF page order, then the spreadsheet rows no document matched.
 pub fn result_rows(dir: &Directory, docs: &[DocResult]) -> Vec<ResultRow> {
-    let mut rows: Vec<ResultRow> = docs.iter().map(|d| doc_row(dir, docs, d)).collect();
+    let mut rows: Vec<ResultRow> = docs.iter().map(|d| doc_row(dir, d)).collect();
 
     for (id, entry) in dir.entries.iter().enumerate() {
         let person = dir.person_of(id);
@@ -200,12 +228,13 @@ pub fn result_rows(dir: &Directory, docs: &[DocResult]) -> Vec<ResultRow> {
             rib: entry.rib.clone(),
             rib_digits: entry.rib_digits.clone(),
             full_name: entry.full_name.clone(),
+            case: String::new(),
         });
     }
     rows
 }
 
-fn doc_row(dir: &Directory, docs: &[DocResult], d: &DocResult) -> ResultRow {
+fn doc_row(dir: &Directory, d: &DocResult) -> ResultRow {
     // The RIB shown: the one matched, else the one the reading was lined up on, else all of
     // the person's RIBs.
     let entry = d
@@ -233,20 +262,6 @@ fn doc_row(dir: &Directory, docs: &[DocResult], d: &DocResult) -> ResultRow {
         (None, None) => "(not found)".to_string(),
     };
 
-    let mut detail = d.detail.clone();
-    if let Some(e) = d.matched_entry {
-        let others: Vec<&str> = docs
-            .iter()
-            .filter(|o| o.matched_entry == Some(e) && o.pages != d.pages)
-            .map(|o| o.pages.as_str())
-            .collect();
-        if !others.is_empty() {
-            detail = format!(
-                "{detail} Same RIB as pages {}. Remove the duplicate.",
-                others.join(", ")
-            );
-        }
-    }
     let aligned = d
         .reading
         .as_ref()
@@ -255,7 +270,8 @@ fn doc_row(dir: &Directory, docs: &[DocResult], d: &DocResult) -> ResultRow {
     ResultRow {
         pages: d.pages.clone(),
         status: d.status,
-        detail,
+        detail: d.detail.clone(),
+        case: d.case.clone().unwrap_or_default(),
         aligned,
         read: d.rib_read.clone(),
         rib,
@@ -396,8 +412,8 @@ mod tests {
     fn rows_follow_pdf_order_then_rows_not_in_pdf() {
         let dir = directory();
         let docs = [
-            doc("1-2", Some(1), None, Status::Yellow),
-            doc("3-4", Some(0), Some(1), Status::Green),
+            doc("1-2", Some(1), None, Status::Unreadable),
+            doc("3-4", Some(0), Some(1), Status::Match),
         ];
         let rows = result_rows(&dir, &docs);
         let pages: Vec<&str> = rows.iter().map(|r| r.pages.as_str()).collect();
@@ -411,7 +427,7 @@ mod tests {
     #[test]
     fn other_rib_of_a_matched_person_is_not_in_pdf() {
         let dir = directory();
-        let rows = result_rows(&dir, &[doc("1-2", Some(0), Some(0), Status::Green)]);
+        let rows = result_rows(&dir, &[doc("1-2", Some(0), Some(0), Status::Match)]);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[1].rib, "222");
         assert!(rows[1].detail.contains("pages 1-2 show another"));
@@ -420,7 +436,7 @@ mod tests {
     #[test]
     fn failing_document_shows_the_rib_it_was_compared_with() {
         let dir = directory();
-        let mut failing = doc("1-2", Some(0), None, Status::Red);
+        let mut failing = doc("1-2", Some(0), None, Status::Mismatch);
         failing.reading = Some(Reading {
             entry: 1,
             aligned: "999".to_string(),
@@ -432,23 +448,12 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_scans_are_flagged() {
-        let dir = directory();
-        let docs = [
-            doc("1-2", Some(0), Some(0), Status::Green),
-            doc("5-6", Some(0), Some(0), Status::Green),
-        ];
-        let rows = result_rows(&dir, &docs);
-        assert!(rows[0].detail.contains("pages 5-6"));
-        assert!(rows[1].detail.contains("pages 1-2"));
-    }
-
-    #[test]
     fn statuses_rank_from_worst_to_best() {
-        assert!(Status::Green > Status::Strong);
+        assert!(Status::Match > Status::Strong);
         assert!(Status::Strong > Status::Partial);
         assert!(Status::Partial > Status::Weak);
-        assert!(Status::Weak > Status::Red);
-        assert!(Status::Weak.is_tier() && !Status::Green.is_tier() && !Status::Red.is_match());
+        assert!(Status::Weak > Status::Mismatch);
+        assert_eq!(Status::Weak.fill_argb(), Status::Duplicate.fill_argb());
+        assert!(Status::Weak.is_tier() && !Status::Match.is_tier() && !Status::Mismatch.is_match());
     }
 }

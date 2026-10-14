@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::matcher::{self, NameMatch};
 use crate::pairing::Issue;
 use crate::report::{DocResult, Status};
-use crate::rib::{self, RibMatch, Tier};
+use crate::rib::{self, RibMatch};
 use crate::scan::{PageText, Scanner, Turn};
 use crate::sheet::Directory;
 use crate::text::normalize_name;
@@ -38,6 +38,46 @@ pub fn process_document(
     check_page: Option<usize>,
     texts: &[Result<PageText>],
 ) -> DocResult {
+    let mut result = check_document(dir, scanner, name_page, check_page, texts);
+    result.page = check_page.unwrap_or(name_page);
+    if result.case.is_none() {
+        result.case = texts[name_page]
+            .as_ref()
+            .ok()
+            .and_then(|t| matcher::case_number(&t.text));
+    }
+    result
+}
+
+/// A document with the same full name and case number as an earlier one is a DUPLICATE.
+/// The same name with another case number is a separate case.
+pub fn flag_duplicates(docs: &mut [DocResult]) {
+    for i in 0..docs.len() {
+        let (earlier, rest) = docs.split_at_mut(i);
+        let doc = &mut rest[0];
+        let (Some(person), Some(case)) = (doc.person, doc.case.clone()) else {
+            continue;
+        };
+        let first = earlier
+            .iter()
+            .find(|d| d.person == Some(person) && d.case.as_ref() == Some(&case));
+        if let Some(first) = first {
+            doc.status = Status::Duplicate;
+            doc.detail = format!(
+                "Duplicate of pages {} (case {case}). Remove it.",
+                first.pages
+            );
+        }
+    }
+}
+
+fn check_document(
+    dir: &Directory,
+    scanner: &Scanner,
+    name_page: usize,
+    check_page: Option<usize>,
+    texts: &[Result<PageText>],
+) -> DocResult {
     let (mut best, name_ok) = evaluate(
         dir,
         name_page,
@@ -45,7 +85,7 @@ pub fn process_document(
         text_of(&texts[name_page]),
         check_page.map(|c| text_of(&texts[c])),
     );
-    if best.status == Status::Green {
+    if best.status == Status::Match {
         return best;
     }
 
@@ -92,6 +132,7 @@ pub fn process_document(
                 best = result;
                 turned.push((page, turn));
                 if page == name_page {
+                    best.case = matcher::case_number(&read.text);
                     fixed_name = Some(read.text);
                 } else {
                     fixed_check = Some(read.text);
@@ -99,7 +140,7 @@ pub fn process_document(
                 break;
             }
         }
-        if best.status == Status::Green {
+        if best.status == Status::Match {
             break;
         }
     }
@@ -138,7 +179,7 @@ const TURN_MIN_DIGITS: usize = 10;
 fn clearly_better(dir: &Directory, turned: &DocResult, current: &DocResult) -> bool {
     let digits = |r: &DocResult| matched_digits(dir, r);
     let trusted = match turned.status {
-        Status::Green => true,
+        Status::Match => true,
         s if s.is_tier() => digits(turned) >= TURN_MIN_DIGITS,
         _ => turned.person.is_some() && current.person.is_none(),
     };
@@ -235,7 +276,7 @@ fn evaluate(
             let note = format!("Page {n}: name could be {}.", names.join(" or "));
             match check_ok.and_then(|t| identify_by_rib(dir, Some(&ids), t)) {
                 Some(p) => (p, Some(note)),
-                None => return (result.yellow(format!("{note} Check which one.")), false),
+                None => return (result.unreadable(format!("{note} Check which one.")), false),
             }
         }
         NameMatch::NotFound => {
@@ -254,7 +295,7 @@ fn evaluate(
             };
             match check_ok.and_then(|t| identify_by_rib(dir, None, t)) {
                 Some(p) => (p, Some(note)),
-                None => return (result.yellow(format!("{note} {action}")), false),
+                None => return (result.unreadable(format!("{note} {action}")), false),
             }
         }
     };
@@ -264,21 +305,32 @@ fn evaluate(
     let check_text = match check {
         None => {
             return (
-                result.yellow(format!("No check after page {n}. Add it.")),
+                result.with_status(Status::NoCheck, format!("No check after page {n}. Add it.")),
                 name_ok,
             );
         }
         Some(Err(_)) => {
             let c = check_page.map_or(n + 1, |c| c + 1);
             return (
-                result.yellow(format!("Page {c}: check unreadable. Rescan it.")),
+                result.unreadable(format!("Page {c}: check unreadable. Rescan it.")),
                 name_ok,
             );
         }
         Some(Ok(t)) => t,
     };
     let c = check_page.map_or(n + 1, |c| c + 1);
-    let found = rib::check(dir, &dir.persons[person].entry_ids, check_text);
+    let entries = &dir.persons[person].entry_ids;
+    if entries
+        .iter()
+        .all(|&e| dir.entries[e].rib_digits.is_empty())
+    {
+        let e = entries[0];
+        result.matched_entry = Some(e);
+        let row = dir.entries[e].row;
+        let detail = format!("Row {row}: no RIB in the spreadsheet. Add it.");
+        return (result.with_status(Status::MissingRib, detail), name_ok);
+    }
+    let found = rib::check(dir, entries, check_text);
     result.apply_rib(dir, found, c);
 
     if let Some(note) = name_note {
@@ -371,7 +423,7 @@ impl DocResult {
         match found.outcome {
             RibMatch::Full { entry, joined } => {
                 self.matched_entry = Some(entry);
-                self.status = Status::Green;
+                self.status = Status::Match;
                 self.rib_read = dir.entries[entry].rib.clone();
                 self.detail = if joined {
                     "RIB OK (read in pieces).".to_string()
@@ -387,48 +439,91 @@ impl DocResult {
                 self.matched_entry = Some(entry);
                 self.status = Status::from_tier(tier);
                 self.rib_read = dir.entries[entry].rib.clone();
-                let what = match tier {
-                    Tier::Strong if a.first >= a.last => format!("First {} RIB digits", a.first),
-                    Tier::Strong | Tier::Partial => format!("Last {} RIB digits", a.last),
-                    Tier::Weak => format!("Only {}/{} RIB digits", a.matched, rib::RIB_LEN),
-                };
-                self.detail = format!("{what} match. Check the RIB by hand.");
+                self.detail = format!(
+                    "{}/{} RIB digits match. Check the RIB by hand.",
+                    a.matched,
+                    rib::RIB_LEN
+                );
             }
             RibMatch::Mismatch { read, .. } => {
-                self.status = Status::Red;
+                self.status = Status::Mismatch;
                 self.detail = format!("Wrong RIB on check: {read}. Verify check and spreadsheet.");
                 self.rib_read = read;
             }
             RibMatch::Unclear { read } => {
-                self.status = Status::Yellow;
+                self.status = Status::Unreadable;
                 self.rib_read = read.join(" | ");
                 self.detail = format!("Page {c}: RIB unreadable. Check it by hand.");
             }
             RibMatch::Unreadable => {
-                self.status = Status::Yellow;
+                self.status = Status::MissingRib;
                 self.detail = format!("Page {c}: no RIB found. Check by hand or rescan.");
             }
         }
     }
 
-    fn yellow(mut self, detail: String) -> Self {
-        self.status = Status::Yellow;
+    fn unreadable(self, detail: String) -> Self {
+        self.with_status(Status::Unreadable, detail)
+    }
+
+    fn with_status(mut self, status: Status, detail: String) -> Self {
+        self.status = status;
         self.detail = detail;
         self
     }
 
     /// Record a page order problem. A re-paired document keeps its verdict; one missing its
-    /// check becomes PAGE ORDER.
+    /// check becomes NO CHECK.
     pub fn with_issue(mut self, issue: Issue, name_page: usize) -> Self {
         let message = issue.describe(name_page);
         match issue {
             Issue::SidesSwapped => self.detail = format!("{message} {}", self.detail),
             Issue::CheckMissing { .. } => {
-                self.status = Status::Order;
+                self.status = Status::NoCheck;
                 self.detail = message.clone();
             }
         }
         self.order_issue = Some(message);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(pages: &str, person: usize, case: Option<&str>) -> DocResult {
+        DocResult {
+            person: Some(person),
+            status: Status::Match,
+            case: case.map(str::to_string),
+            ..DocResult::new(pages.to_string())
+        }
+    }
+
+    #[test]
+    fn same_name_and_case_is_a_duplicate() {
+        let mut docs = [
+            doc("1-2", 0, Some("2605-2026-110201")),
+            doc("3-4", 0, Some("2605-2026-110202")),
+            doc("5-6", 0, Some("2605-2026-110201")),
+            doc("7-8", 1, Some("2605-2026-110201")),
+            doc("9-10", 0, None),
+            doc("11-12", 0, None),
+        ];
+        flag_duplicates(&mut docs);
+        let statuses: Vec<Status> = docs.iter().map(|d| d.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                Status::Match,
+                Status::Match,
+                Status::Duplicate,
+                Status::Match,
+                Status::Match,
+                Status::Match
+            ]
+        );
+        assert!(docs[2].detail.contains("pages 1-2"));
     }
 }
